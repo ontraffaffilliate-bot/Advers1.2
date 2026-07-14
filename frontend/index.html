@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c0e18" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="AdVerse — CRM для медиабайеров и агентских Facebook Ads аккаунтов. Telegram Mini App." />
+  <title>AdVerse CRM</title>
+  <!-- Telegram Mini App SDK — must be before app scripts -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect rx='22' width='100' height='100' fill='%236c5ce7'/><text x='50' y='68' text-anchor='middle' font-size='52' font-family='system-ui' font-weight='800' fill='white'>A</text></svg>" />
+</head>
+<body>
+  <div class="app">
+    <!-- ═══ LOGIN ═══ -->
+    <div class="screen login-screen active" id="screen-login">
+      <div class="login-logo">A</div>
+      <h1 class="login-title">AdVerse</h1>
+      <p class="login-sub">CRM для медиабайеров и поставщиков агентских Facebook Ads аккаунтов</p>
+
+      <div class="role-picker" id="role-picker"></div>
+
+      <button type="button" class="btn btn-primary" id="btn-login">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06-.01.24-.02.34z"/>
+        </svg>
+        Войти через Telegram
+      </button>
+
+      <div id="tg-user-badge" class="tg-user-badge hidden"></div>
+
+      <p class="login-disclaimer" id="login-disclaimer">
+        Демо-режим: выберите роль для просмотра интерфейса.<br />
+        Платформа не принимает и не хранит денежные средства — только подписка CRM.
+      </p>
+    </div>
+
+    <!-- ═══ MAIN APP ═══ -->
+    <div class="screen main-app" id="screen-app">
+      <header class="top-header">
+        <div class="user-chip">
+          <div class="avatar" id="header-avatar">AB</div>
+          <div class="user-meta">
+            <div class="name" id="header-name">Alex Buyer</div>
+            <div class="plan" id="header-plan"><span>✦</span> Team</div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <div class="balance-pill" id="header-balance"><span>◉</span> $0</div>
+          <button type="button" class="btn-icon notif-btn" id="notif-btn" aria-label="Уведомления">
+            🔔
+            <span class="notif-dot" id="notif-dot"></span>
+          </button>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- Buyer / Team pages -->
+        <div class="page" id="page-dashboard"></div>
+        <div class="page" id="page-orders"></div>
+        <div class="page" id="page-topup"></div>
+        <div class="page" id="page-accounts"></div>
+        <div class="page" id="page-more"></div>
+        <div class="page" id="page-team"></div>
+        <div class="page" id="page-pricing"></div>
+        <div class="page" id="page-support"></div>
+        <div class="page" id="page-profile"></div>
+        <div class="page" id="page-analytics"></div>
+
+        <!-- Agent pages -->
+        <div class="page" id="page-agent-home"></div>
+        <div class="page" id="page-agent-orders"></div>
+        <div class="page" id="page-agent-topups"></div>
+        <div class="page" id="page-agent-balances"></div>
+
+        <!-- Support staff pages -->
+        <div class="page" id="page-support-home"></div>
+        <div class="page" id="page-support-tickets"></div>
+        <div class="page" id="page-support-orders"></div>
+
+        <!-- Admin pages -->
+        <div class="page" id="page-admin-home"></div>
+        <div class="page" id="page-admin-users"></div>
+        <div class="page" id="page-admin-agents"></div>
+        <div class="page" id="page-admin-orders"></div>
+        <div class="page" id="page-admin-logs"></div>
+      </main>
+
+      <nav class="bottom-nav" id="bottom-nav" aria-label="Основная навигация"></nav>
+
+      <button type="button" class="fab hidden" id="fab" aria-label="Создать заказ">+</button>
+    </div>
+
+    <!-- Connection / server error screen -->
+    <div class="screen" id="screen-offline">
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;gap:12px">
+        <div style="font-size:48px">📡</div>
+        <h2 style="font-size:18px;font-weight:700">Нет соединения с сервером</h2>
+        <p class="text-secondary text-sm">Технические работы или пропало соединение. Попробуйте ещё раз через минуту.</p>
+        <button type="button" class="btn btn-primary" onclick="retryLoad()">Повторить</button>
+      </div>
+    </div>
+
+    <!-- Overlays -->
+    <div class="overlay" id="overlay"></div>
+
+    <div class="sheet" id="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-handle"></div>
+      <h2 class="sheet-title" id="sheet-title"></h2>
+      <div id="sheet-body"></div>
+    </div>
+
+    <div class="modal" id="modal" role="dialog" aria-modal="true">
+      <div id="modal-body"></div>
+    </div>
+
+    <div class="toast-container" id="toast-container"></div>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/telegram.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
