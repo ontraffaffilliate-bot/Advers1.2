@@ -115,7 +115,10 @@ function showPage(pageId) {
 function renderRolePicker() {
   const container = $("#role-picker");
   if (!container) return;
-  container.innerHTML = Object.values(ROLES)
+  // v2.0: самостоятельно выбрать можно только Buyer/Agent. Admin выдаётся
+  // сервером принудительно по ADMIN_IDS, Team/Support назначает админ вручную.
+  const selectable = ["buyer", "agent"].map((id) => ROLES[id]).filter(Boolean);
+  container.innerHTML = selectable
     .map(
       (r) => `
     <button type="button" class="role-option ${selectedRole === r.id ? "selected" : ""}" data-role="${r.id}">
@@ -170,16 +173,20 @@ function applyTelegramUserToUI() {
   }
 }
 
-function applyTelegramProfileToRole(role) {
-  if (!TG.user) return role;
-  const name = getTelegramDisplayName();
+function applyTelegramProfileToRole(role, apiUser) {
+  if (!TG.user && !apiUser) return role;
+  const name =
+    [apiUser?.first_name, apiUser?.last_name].filter(Boolean).join(" ") ||
+    getTelegramDisplayName() ||
+    role.displayName;
+  const username = apiUser?.username || TG.user?.username || String(apiUser?.telegram_id ?? TG.user?.id ?? "");
   const letters = getTelegramAvatarLetters();
   return {
     ...role,
-    displayName: name || role.displayName,
-    username: TG.user.username || String(TG.user.id),
+    displayName: name,
+    username,
     avatar: letters,
-    telegramId: TG.user.id,
+    telegramId: apiUser?.telegram_id ?? TG.user?.id,
   };
 }
 
@@ -236,8 +243,10 @@ async function completeRegistration() {
 async function enterApp(roleId, apiUser) {
   state.role = roleId;
   state.isAdmin = Boolean(apiUser?.is_admin);
+  state.isPaid = Boolean(apiUser?.is_paid);
+  state.currentUser = apiUser || null;
   let role = { ...(ROLES[roleId] || ROLES.buyer) };
-  role = applyTelegramProfileToRole(role);
+  role = applyTelegramProfileToRole(role, apiUser);
   state.sessionRole = role;
   pendingRegistration = false;
 
@@ -948,7 +957,7 @@ async function submitOrderToServer(agent) {
       () => showPage("orders")
     );
   } catch (e) {
-    if (e.code === "SUBSCRIPTION_REQUIRED" || e.code === "SUBSCRIPTION_EXPIRED") {
+    if (e.code === "PAYMENT_REQUIRED") {
       closeSheet();
       showSubscriptionModal(e.message);
     } else {
@@ -1088,7 +1097,7 @@ async function submitTopup() {
       () => showPage("topup")
     );
   } catch (e) {
-    if (e.code === "SUBSCRIPTION_REQUIRED" || e.code === "SUBSCRIPTION_EXPIRED") {
+    if (e.code === "PAYMENT_REQUIRED") {
       closeSheet();
       showSubscriptionModal(e.message);
     } else {
@@ -1241,7 +1250,7 @@ function disconnectApi(id) {
 function renderMore() {
   const el = $("#page-more");
   if (!el) return;
-  const role = ROLES[state.role];
+  const role = state.sessionRole || ROLES[state.role];
 
   const buyerItems = `
     <div class="settings-group">
@@ -1268,6 +1277,8 @@ function renderMore() {
       state.isAdmin
         ? `<div class="settings-group">
             <div class="settings-row" onclick="showPage('admin-agents')"><span>⚙️ Управление агентами</span><span class="arrow">›</span></div>
+            <div class="settings-row" onclick="showPage('admin-users')"><span>🛡️ Пользователи (Центр управления)</span><span class="arrow">›</span></div>
+            <div class="settings-row" onclick="showPage('admin-logs')"><span>📜 Аудит-лог</span><span class="arrow">›</span></div>
           </div>`
         : ""
     }
@@ -1373,6 +1384,22 @@ function renderPricing() {
   const el = $("#page-pricing");
   if (!el) return;
 
+  if (!state.isAdmin && !state.isPaid) {
+    el.innerHTML = `
+      <h1 class="page-title">Тарифы</h1>
+      <div class="card text-center mt-20" style="padding:32px 20px">
+        <div style="font-size:40px;margin-bottom:12px">⏳</div>
+        <h2 style="font-size:17px;font-weight:700;margin-bottom:8px">Ожидание активации</h2>
+        <p class="text-secondary text-sm mb-20">
+          Доступ к тарифам открывает администратор после проверки заявки.
+          Мы уже получили ваш запрос — обычно активация занимает немного времени.
+        </p>
+        <button type="button" class="btn btn-primary" onclick="showPage('support')">Связаться с поддержкой</button>
+      </div>
+    `;
+    return;
+  }
+
   el.innerHTML = `
     <h1 class="page-title">Тарифы</h1>
     <p class="page-sub">Доход платформы — только подписка</p>
@@ -1404,8 +1431,8 @@ function selectPlan(id) {
   state.currentPlan = id;
   const p = PLANS.find((x) => x.id === id);
   if (state.role === "buyer" || state.role === "team") {
-    ROLES[state.role].plan = p.name;
-    updateHeader(ROLES[state.role]);
+    state.sessionRole.plan = p.name;
+    updateHeader(state.sessionRole);
   }
   renderPricing();
   toast(`Тариф ${p.name} выбран`, "success");
@@ -1544,7 +1571,17 @@ function escapeHtml(s) {
 function renderProfile() {
   const el = $("#page-profile");
   if (!el) return;
-  const role = ROLES[state.role];
+  // Баг из ТЗ v2.0: раньше здесь брался статический мок ROLES[state.role],
+  // из-за чего в профиле всегда показывался фейковый "alex_buyer" вместо
+  // реального ника. Правильный источник — state.sessionRole (собран в
+  // enterApp() из ответа сервера user.username) или сам state.currentUser.
+  const role = state.sessionRole || ROLES[state.role];
+  const u = state.currentUser;
+  const paidBadge = state.isAdmin
+    ? `<span class="badge badge-accent mt-8">Admin · бесплатно</span>`
+    : u && !u.is_paid
+    ? `<span class="badge badge-muted mt-8">Ожидание активации</span>`
+    : `<span class="badge badge-green mt-8">Оплачено</span>`;
 
   el.innerHTML = `
     <h1 class="page-title">Профиль</h1>
@@ -1552,7 +1589,7 @@ function renderProfile() {
       <div class="avatar lg">${role.avatar}</div>
       <h2 style="font-size:18px;font-weight:700">${role.displayName}</h2>
       <p class="text-secondary">@${role.username}</p>
-      <span class="badge badge-accent mt-8">${role.plan}</span>
+      ${paidBadge}
     </div>
 
     <div class="section-title">Балансы по агентам</div>
@@ -2030,20 +2067,22 @@ function renderAdminUsers() {
   if (!el) return;
   el.innerHTML = `<div class="skeleton-block" style="height:80px;margin-bottom:12px"></div>`;
 
-  Api.adminListUsers()
-    .then((users) => {
+  Promise.all([Api.adminListUsers(), Api.listAgents()])
+    .then(([users, agents]) => {
+      state.allAgentsForAdmin = agents;
       el.innerHTML = `
         <h1 class="page-title">Пользователи</h1>
+        <p class="page-sub">Центр управления · поиск по нику, оплата, роли, условия агентов</p>
         <div class="search-box mt-12">
           <span class="icon">⌕</span>
-          <input placeholder="Поиск..." id="user-search" />
+          <input placeholder="Поиск по @нику или ID..." id="user-search" />
         </div>
         <div class="member-list" id="user-list">
-          ${users.map((u) => userRowHtml(u)).join("")}
+          ${users.map((u) => userRowHtml(u, agents)).join("")}
         </div>
       `;
       $("#user-search")?.addEventListener("input", (e) => {
-        const q = e.target.value.trim().toLowerCase();
+        const q = e.target.value.trim().toLowerCase().replace(/^@/, "");
         $$("#user-list .member-row").forEach((row) => {
           row.style.display = row.dataset.search.includes(q) ? "" : "none";
         });
@@ -2054,26 +2093,54 @@ function renderAdminUsers() {
     });
 }
 
-function userRowHtml(u) {
-  const name = [u.first_name, u.last_name].filter(Boolean).join(" ") || u.username || `User ${u.telegram_id}`;
-  const needsSubscription = ["buyer", "team"].includes(u.role);
-  const active = u.is_approved && u.subscription_end_date && new Date(u.subscription_end_date) > new Date();
-  const subText = !needsSubscription
-    ? "Внутренняя роль"
-    : active
-    ? `до ${new Date(u.subscription_end_date).toLocaleDateString("ru-RU")}`
-    : "нет подписки";
+function userRowHtml(u, agents) {
+  const name = u.username ? `@${u.username}` : [u.first_name, u.last_name].filter(Boolean).join(" ") || `tg:${u.telegram_id}`;
+  const linkedAgent = agents.find((a) => a.id === u.managed_agent_id);
+  const roleOptions = ["buyer", "team", "agent", "support"]
+    .map((r) => `<option value="${r}" ${u.role === r ? "selected" : ""}>${ROLES[r]?.name || r}</option>`)
+    .join("");
+
+  if (u.is_admin) {
+    return `
+      <div class="member-row" data-search="${(name + " " + u.telegram_id).toLowerCase()}">
+        <div class="avatar sm">⚙️</div>
+        <div class="member-info">
+          <h4>${name} · Admin</h4>
+          <p>tg:${u.telegram_id} · полный доступ, бесплатно</p>
+        </div>
+        <span class="status status-active">Admin</span>
+      </div>
+    `;
+  }
+
   return `
-    <div class="member-row" data-search="${(name + " " + u.telegram_id + " " + u.role).toLowerCase()}">
-      <div class="avatar sm">${name.slice(0, 2).toUpperCase()}</div>
-      <div class="member-info">
-        <h4>${name} ${u.is_admin ? "⚙️" : ""}</h4>
-        <p>${u.role} · tg:${u.telegram_id} · ${subText}</p>
+    <div class="member-row" style="flex-direction:column;align-items:stretch;gap:8px" data-search="${(name + " " + u.telegram_id).toLowerCase()}">
+      <div class="flex justify-between items-center">
+        <div class="member-info">
+          <h4>${name}</h4>
+          <p>tg:${u.telegram_id}${linkedAgent ? ` · агент: ${linkedAgent.name}` : ""}</p>
+        </div>
+        <button type="button" class="btn btn-sm ${u.is_paid ? "btn-secondary" : "btn-primary"}" onclick="adminTogglePaid(${u.id}, ${!u.is_paid})">
+          ${u.is_paid ? "✓ Оплачено" : "Активировать"}
+        </button>
+      </div>
+      <div class="flex gap-8">
+        <select class="form-select" style="flex:1" id="role-select-${u.id}" onchange="adminChangeRole(${u.id}, this.value)">
+          ${roleOptions}
+        </select>
+        ${
+          u.role === "agent"
+            ? `<select class="form-select" style="flex:1" onchange="adminLinkAgent(${u.id}, this.value)">
+                <option value="">— не привязан —</option>
+                ${agents.map((a) => `<option value="${a.id}" ${a.id === u.managed_agent_id ? "selected" : ""}>${a.name}</option>`).join("")}
+              </select>`
+            : ""
+        }
       </div>
       ${
-        needsSubscription
-          ? `<button type="button" class="btn btn-secondary btn-sm" onclick="adminExtendUser(${u.id})">Продлить на 30 дней</button>`
-          : `<span class="status status-active">${STATUS_LABELS.active}</span>`
+        linkedAgent
+          ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openAdminAgentEdit(${linkedAgent.id})">Кошелёк / % / лимиты этого агента</button>`
+          : ""
       }
     </div>
   `;
@@ -2085,18 +2152,40 @@ function auditActionLabel(action) {
     agent_toggle: "Изменена видимость агента",
     agent_update: "Изменены данные агента",
     subscription_extend: "Продлена подписка",
+    user_update: "Изменены права/оплата пользователя",
     topup_confirm: "Подтверждено пополнение (баланс изменён)",
   };
   return labels[action] || action;
 }
 
-async function adminExtendUser(userId) {
+async function adminTogglePaid(userId, value) {
   try {
-    await Api.adminExtendSubscription(userId, 30);
+    await Api.adminUpdateUser({ user_id: userId, is_paid: value });
     renderAdminUsers();
-    toast("Подписка продлена на 30 дней", "success");
+    toast(value ? "Доступ активирован" : "Доступ отключён", "success");
   } catch (e) {
-    toast(e.message || "Не удалось продлить подписку", "error");
+    toast(e.message || "Не удалось обновить статус оплаты", "error");
+  }
+}
+
+async function adminChangeRole(userId, role) {
+  try {
+    await Api.adminUpdateUser({ user_id: userId, role });
+    renderAdminUsers();
+    toast(`Роль изменена → ${ROLES[role]?.name || role}`, "success");
+  } catch (e) {
+    toast(e.message || "Не удалось изменить роль", "error");
+    renderAdminUsers();
+  }
+}
+
+async function adminLinkAgent(userId, agentId) {
+  try {
+    await Api.adminUpdateUser({ user_id: userId, managed_agent_id: agentId ? parseInt(agentId, 10) : 0 });
+    renderAdminUsers();
+    toast("Агент-профиль привязан", "success");
+  } catch (e) {
+    toast(e.message || "Не удалось привязать агента", "error");
   }
 }
 
@@ -2341,7 +2430,7 @@ function openNotifications() {
 
 function markAllRead() {
   state.notifications.forEach((n) => (n.unread = false));
-  updateHeader(ROLES[state.role]);
+  updateHeader(state.sessionRole || ROLES[state.role]);
   closeSheet();
   toast("Все прочитаны", "info");
 }
@@ -2574,7 +2663,9 @@ Object.assign(window, {
   openAdminAgentCreate,
   saveAdminAgentCreate,
   showSubscriptionModal,
-  adminExtendUser,
+  adminTogglePaid,
+  adminChangeRole,
+  adminLinkAgent,
   openAgentReview,
   setReviewStars,
   submitAgentReview,

@@ -19,7 +19,18 @@ class User(Base):
     balance = Column(Float, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # ── SaaS access control ──
+    # ── v2.0: единый флаг платного доступа. Админ переключает его в один
+    # клик в /api/admin/users/update. Пока is_paid=False, тарифы закрыты и
+    # юзер видит "Ожидание активации". Админ (is_admin=True) всегда в доступе.
+    is_paid = Column(Boolean, default=False)
+
+    # Если роль = agent, эта колонка указывает, каким Agent-профилем
+    # (кошелёк/%/лимиты) управляет этот Telegram-аккаунт. Назначается
+    # админом при выдаче роли Агент/Саппорт конкретному человеку.
+    managed_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+
+    # Оставлено для обратной совместимости с первой версией подписки
+    # (сейчас не используется как гейт — см. is_paid выше).
     is_approved = Column(Boolean, default=False)
     subscription_end_date = Column(DateTime, nullable=True)
     expiry_notified = Column(Boolean, default=False)

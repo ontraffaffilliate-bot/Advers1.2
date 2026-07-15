@@ -98,6 +98,9 @@ const Api = {
   adminExtendSubscription(userId, days = 30) {
     return this.request("/api/admin/users/extend", { method: "POST", body: { user_id: userId, days } });
   },
+  adminUpdateUser(payload) {
+    return this.request("/api/admin/users/update", { method: "POST", body: payload });
+  },
   adminAuditLog() {
     return this.request("/api/admin/audit-log");
   },

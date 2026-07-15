@@ -3,9 +3,9 @@ AdVerse CRM — Backend API (FastAPI + SQLite)
 
 Запуск:
   pip install -r requirements.txt
-  export BOT_TOKEN="8984935026:AAH_E_xRR-BRJAU7aKKosQ5O3FlsMGV2Chs"      # тот же токен, что у бота
-  export ADMIN_IDS="565099645"           # твой Telegram ID (можно несколько через запятую)
-  export CORS_ORIGINS="https://advers1-2.vercel.app"
+  export BOT_TOKEN="123456:ABC..."      # тот же токен, что у бота
+  export ADMIN_IDS="123456789"           # твой Telegram ID (можно несколько через запятую)
+  export CORS_ORIGINS="https://adverse-crm.vercel.app"
   uvicorn main:app --host 0.0.0.0 --port 8000
 """
 
@@ -38,12 +38,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-VALID_ROLES = {"buyer", "team", "agent", "support"}  # "admin" выдаётся только по ADMIN_IDS
+VALID_ROLES = {"buyer", "agent"}  # самостоятельно регистрируются только эти;
+# "team"/"support" назначаются админом вручную через /api/admin/users/update,
+# "admin" никогда не выбирается — только по ADMIN_IDS.
 
 
 # ───────────────────────── helpers ─────────────────────────
 
-def get_current_user(
+async def _resolve_user(tg_user: dict, db: Session) -> models.User:
+    """
+    Единая точка входа для «найти или создать» пользователя по данным из
+    initData. Используется и в /api/auth, и в get_current_user, чтобы логика
+    (принудительный admin, актуальный username, уведомление админу) не
+    расходилась в двух местах.
+    """
+    telegram_id = str(tg_user["id"])
+    username = tg_user.get("username")
+    first_name = tg_user.get("first_name")
+    last_name = tg_user.get("last_name")
+    forced_admin = is_admin_id(telegram_id)
+
+    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
+    is_new = user is None
+
+    if is_new:
+        user = models.User(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+            role="admin" if forced_admin else "new",
+            is_admin=forced_admin,
+            is_paid=forced_admin,  # админ всегда в доступе и бесплатно
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        # Ник в Telegram мог поменяться — обновляем при каждом входе, чтобы
+        # в профиле и в админке всегда был реальный @username, а не старый
+        # кэш с момента первой регистрации.
+        changed = False
+        if user.username != username:
+            user.username = username
+            changed = True
+        if user.first_name != first_name:
+            user.first_name = first_name
+            changed = True
+        if user.last_name != last_name:
+            user.last_name = last_name
+            changed = True
+        # ADMIN_IDS — источник истины при каждом заходе: если ID туда
+        # добавили/убрали, роль и доступ подтягиваются автоматически.
+        if forced_admin and (not user.is_admin or user.role != "admin"):
+            user.is_admin = True
+            user.role = "admin"
+            user.is_paid = True
+            changed = True
+        elif not forced_admin and user.is_admin:
+            user.is_admin = False
+            changed = True
+        if changed:
+            db.commit()
+
+    if is_new and not forced_admin:
+        who = f"@{username}" if username else (first_name or telegram_id)
+        for admin_tid in sorted(ADMIN_IDS):
+            await send_telegram_message(
+                admin_tid,
+                f"🚨 *Новая заявка*: {who} (ID: `{telegram_id}`)\nОжидает подтверждения оплаты в админ-панели.",
+            )
+
+    return user
+
+
+async def get_current_user(
     x_telegram_init_data: Optional[str] = Header(None), db: Session = Depends(get_db)
 ) -> models.User:
     """
@@ -56,28 +125,7 @@ def get_current_user(
         tg_user = validate_init_data(x_telegram_init_data)
     except InitDataError as e:
         raise HTTPException(401, str(e))
-
-    telegram_id = str(tg_user["id"])
-    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
-    if not user:
-        user = models.User(
-            telegram_id=telegram_id,
-            username=tg_user.get("username"),
-            first_name=tg_user.get("first_name"),
-            last_name=tg_user.get("last_name"),
-            role="new",
-            is_admin=is_admin_id(telegram_id),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    else:
-        # Держим is_admin синхронизированным с текущим ADMIN_IDS на каждый заход
-        admin_now = is_admin_id(telegram_id)
-        if user.is_admin != admin_now:
-            user.is_admin = admin_now
-            db.commit()
-    return user
+    return await _resolve_user(tg_user, db)
 
 
 def require_admin(user: models.User = Depends(get_current_user)) -> models.User:
@@ -99,21 +147,19 @@ def audit(db: Session, actor: models.User, action: str, target: str = "", amount
     db.commit()
 
 
-def require_active_subscription(
+def require_paid_access(
     user: models.User = Depends(get_current_user), db: Session = Depends(get_db)
 ) -> models.User:
     """
-    Гейт доступа для платного функционала. Админы, агенты и саппорт не платят
-    подписку — это внутренние роли. Buyer/Team должны быть is_approved и иметь
-    неистёкшую subscription_end_date, иначе получают структурированную 403,
-    которую фронтенд показывает как экран "оформите подписку".
+    Гейт платного доступа (v2.0): один флаг is_paid, который админ переключает
+    в один клик в /api/admin/users/update. Админы/агенты/саппорт не платят —
+    это внутренние роли. Buyer/Team без is_paid получают структурированную
+    403, которую фронтенд показывает как экран "Ожидание активации".
     """
     if user.is_admin or user.role in ("agent", "support"):
         return user
-    if not user.is_approved:
-        raise HTTPException(403, detail={"code": "SUBSCRIPTION_REQUIRED", "message": "Подписка не активирована. Обратитесь к администратору."})
-    if not user.subscription_end_date or user.subscription_end_date < datetime.utcnow():
-        raise HTTPException(403, detail={"code": "SUBSCRIPTION_EXPIRED", "message": "Срок подписки истёк. Продлите доступ у администратора."})
+    if not user.is_paid:
+        raise HTTPException(403, detail={"code": "PAYMENT_REQUIRED", "message": "Доступ ещё не активирован администратором. Свяжитесь с поддержкой."})
     return user
 
 
@@ -126,6 +172,8 @@ def user_out(u: models.User) -> dict:
         "last_name": u.last_name,
         "role": u.role,
         "is_admin": u.is_admin,
+        "is_paid": u.is_paid,
+        "managed_agent_id": u.managed_agent_id,
         "balance": u.balance,
         "is_approved": u.is_approved,
         "subscription_end_date": u.subscription_end_date.isoformat() if u.subscription_end_date else None,
@@ -273,6 +321,13 @@ class ExtendSubscriptionIn(BaseModel):
     days: int = 30
 
 
+class AdminUserUpdateIn(BaseModel):
+    user_id: int
+    is_paid: Optional[bool] = None
+    role: Optional[str] = None  # buyer | team | agent | support (admin is never set here)
+    managed_agent_id: Optional[int] = None
+
+
 class ReviewIn(BaseModel):
     rating: int
     comment: str = ""
@@ -291,26 +346,13 @@ class TicketMessageIn(BaseModel):
 # ───────────────────────── auth / registration ─────────────────────────
 
 @app.post("/api/auth")
-def auth(payload: AuthIn, db: Session = Depends(get_db)):
+async def auth(payload: AuthIn, db: Session = Depends(get_db)):
     try:
         tg_user = validate_init_data(payload.initData)
     except InitDataError as e:
         raise HTTPException(401, str(e))
 
-    telegram_id = str(tg_user["id"])
-    user = db.query(models.User).filter(models.User.telegram_id == telegram_id).first()
-    if not user:
-        user = models.User(
-            telegram_id=telegram_id,
-            username=tg_user.get("username"),
-            first_name=tg_user.get("first_name"),
-            last_name=tg_user.get("last_name"),
-            role="new",
-            is_admin=is_admin_id(telegram_id),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    user = await _resolve_user(tg_user, db)
 
     if user.role == "new":
         return {"status": "needs_registration", "user": user_out(user)}
@@ -319,6 +361,10 @@ def auth(payload: AuthIn, db: Session = Depends(get_db)):
 
 @app.post("/api/register")
 def register(payload: RegisterIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.is_admin:
+        # Админ никогда не проходит обычную регистрацию — роль уже выставлена
+        # принудительно в _resolve_user.
+        return {"status": "ok", "user": user_out(user)}
     if payload.role not in VALID_ROLES:
         raise HTTPException(400, f"Недопустимая роль. Разрешены: {sorted(VALID_ROLES)}")
     user.role = payload.role
@@ -418,7 +464,7 @@ def list_orders(user: models.User = Depends(get_current_user), db: Session = Dep
 
 
 @app.post("/api/orders")
-def create_order(payload: OrderCreateIn, user: models.User = Depends(require_active_subscription), db: Session = Depends(get_db)):
+def create_order(payload: OrderCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
     if user.role not in ("buyer", "team"):
         raise HTTPException(403, "Заказывать аккаунты может только Buyer/Team")
     agent = db.query(models.Agent).get(payload.agentId)
@@ -474,7 +520,7 @@ def list_topups(user: models.User = Depends(get_current_user), db: Session = Dep
 
 
 @app.post("/api/topups")
-def create_topup(payload: TopupCreateIn, user: models.User = Depends(require_active_subscription), db: Session = Depends(get_db)):
+def create_topup(payload: TopupCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
     if user.role not in ("buyer", "team"):
         raise HTTPException(403, "Пополнять баланс может только Buyer/Team")
     agent = db.query(models.Agent).get(payload.agentId)
@@ -525,6 +571,39 @@ def health():
 @app.get("/api/admin/users")
 def admin_list_users(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     return [user_out(u) for u in db.query(models.User).order_by(models.User.created_at.desc()).all()]
+
+
+ASSIGNABLE_ROLES = {"buyer", "team", "agent", "support"}  # admin никогда не назначается вручную
+
+
+@app.post("/api/admin/users/update")
+def admin_update_user(payload: AdminUserUpdateIn, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    target = db.query(models.User).get(payload.user_id)
+    if not target:
+        raise HTTPException(404, "Пользователь не найден")
+    if target.is_admin:
+        raise HTTPException(400, "Нельзя менять роль/доступ другого администратора")
+
+    changes = {}
+    if payload.is_paid is not None:
+        target.is_paid = payload.is_paid
+        changes["is_paid"] = payload.is_paid
+    if payload.role is not None:
+        if payload.role not in ASSIGNABLE_ROLES:
+            raise HTTPException(400, f"Недопустимая роль. Разрешены: {sorted(ASSIGNABLE_ROLES)}")
+        target.role = payload.role
+        changes["role"] = payload.role
+    if payload.managed_agent_id is not None:
+        agent = db.query(models.Agent).get(payload.managed_agent_id) if payload.managed_agent_id else None
+        if payload.managed_agent_id and not agent:
+            raise HTTPException(404, "Агент не найден")
+        target.managed_agent_id = payload.managed_agent_id or None
+        changes["managed_agent_id"] = payload.managed_agent_id
+
+    db.commit()
+    if changes:
+        audit(db, admin, "user_update", target=f"user:{target.id}", meta=changes)
+    return user_out(target)
 
 
 @app.post("/api/admin/users/extend")

@@ -331,6 +331,9 @@ function getInitialState() {
     notifications: JSON.parse(JSON.stringify(NOTIFICATIONS)),
     currentPlan: "team",
     isAdmin: false,
+    isPaid: false,
+    currentUser: null,
+    myTickets: [],
     dataLoaded: false,
   };
 }
