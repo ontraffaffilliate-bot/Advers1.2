@@ -4,7 +4,7 @@ AdVerse CRM — Backend API (FastAPI + SQLite)
 Запуск:
   pip install -r requirements.txt
   export BOT_TOKEN="123456:ABC..."      # тот же токен, что у бота
-  export ADMIN_IDS="123456789"           # твой Telegram ID (можно несколько через запятую)
+  export ADMIN_IDS="565099645"           # твой Telegram ID (можно несколько через запятую)
   export CORS_ORIGINS="https://adverse-crm.vercel.app"
   uvicorn main:app --host 0.0.0.0 --port 8000
 """
