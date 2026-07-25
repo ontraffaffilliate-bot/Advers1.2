@@ -29,6 +29,14 @@ class User(Base):
     # админом при выдаче роли Агент/Саппорт конкретному человеку.
     managed_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
 
+    # Тариф, который админ выдал этому buyer/team (см. PLANS на фронте):
+    # "solo" | "team" | "unlimited" | None (ещё не назначен).
+    subscription_plan = Column(String, nullable=True)
+
+    # Саппорт, закреплённый персонально за этим buyer/team — все его тикеты
+    # уходят в личку именно этому саппорту (плюс копия админу).
+    assigned_support_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
     # Оставлено для обратной совместимости с первой версией подписки
     # (сейчас не используется как гейт — см. is_paid выше).
     is_approved = Column(Boolean, default=False)
@@ -68,6 +76,7 @@ class Order(Base):
     qty = Column(Integer, default=1)
     timezone = Column(String, default="UTC+0")
     pixel = Column(Boolean, default=False)
+    pixel_name = Column(String, default="")
     bm = Column(String, default="new")
     fan_pages = Column(Boolean, default=False)
     fan_page_count = Column(Integer, default=0)
@@ -132,11 +141,25 @@ class TicketMessage(Base):
     sender = Column(String, nullable=False)  # "user" | "admin"
     text = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
-    # message_id Telegram присвоил уведомлению, отправленному админу для этого
-    # сообщения — по нему бот находит, на какой тикет админ отвечает.
-    admin_msg_id = Column(Integer, nullable=True)
 
     ticket = relationship("Ticket", back_populates="messages")
+
+
+class TicketNotification(Base):
+    """
+    Каждое уведомление о тикете, отправленное в чей-то личный чат в Telegram
+    (админу и/или закреплённому саппорту). message_id уникален только внутри
+    ОДНОГО чата, поэтому храним пару (chat_id, message_id) — так бот может
+    правильно сопоставить reply от любого из получателей с нужным тикетом,
+    даже если у ticket несколько адресатов уведомлений.
+    """
+    __tablename__ = "ticket_notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=False)
+    chat_id = Column(String, nullable=False)
+    message_id = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class AuditLog(Base):
@@ -149,4 +172,38 @@ class AuditLog(Base):
     target = Column(String, default="")  # e.g. "user:12", "agent:3", "topup:TOP-9012"
     amount = Column(Float, nullable=True)
     meta = Column(Text, default="")  # JSON-encoded extra details
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AdAccount(Base):
+    """
+    Реальный рекламный кабинет, подключённый через Facebook Marketing API.
+    Раньше вся страница "Аккаунты" была захардкоженным моком (ACCOUNTS в
+    data.js) с фейковыми цифрами spend/balance, которые никогда не менялись —
+    отсюда и "зависшие балансы". Теперь это настоящие данные из БД,
+    синхронизируемые через /api/accounts/{id}/sync (см. facebook_api.py).
+    Новый кабинет стартует с нулевыми значениями, пока его не синхронизируют.
+    """
+    __tablename__ = "ad_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)  # какой агент выдал этот кабинет
+    order_id = Column(String, ForeignKey("orders.id"), nullable=True)  # из какого заказа он появился (если авто-создан)
+    name = Column(String, default="")
+    fb_account_id = Column(String, nullable=True)  # без "act_" префикса; пусто = токен ещё не привязан
+    access_token = Column(String, nullable=True)
+    status = Column(String, default="pending")  # pending | active | error | disabled
+    last_error = Column(Text, nullable=True)
+    currency = Column(String, default="USD")
+
+    spend_today = Column(Float, default=0)
+    spend_week = Column(Float, default=0)
+    spend_month = Column(Float, default=0)
+    spend_lifetime = Column(Float, default=0)
+    campaigns = Column(Integer, default=0)
+    adsets = Column(Integer, default=0)
+    ads = Column(Integer, default=0)
+
+    last_synced_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

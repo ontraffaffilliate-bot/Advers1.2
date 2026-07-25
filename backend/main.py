@@ -4,7 +4,7 @@ AdVerse CRM — Backend API (FastAPI + SQLite)
 Запуск:
   pip install -r requirements.txt
   export BOT_TOKEN="123456:ABC..."      # тот же токен, что у бота
-  export ADMIN_IDS="565099645"           # твой Telegram ID (можно несколько через запятую)
+  export ADMIN_IDS="123456789"           # твой Telegram ID (можно несколько через запятую)
   export CORS_ORIGINS="https://adverse-crm.vercel.app"
   uvicorn main:app --host 0.0.0.0 --port 8000
 """
@@ -20,20 +20,31 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from database import Base, engine, get_db
+from database import Base, engine, get_db, DATABASE_URL
 import models
 from auth import validate_init_data, is_admin_id, ADMIN_IDS, InitDataError
 from telegram_notify import send_telegram_message
+from facebook_api import sync_ad_account, FacebookAPIError
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="AdVerse CRM API")
 
+if DATABASE_URL.startswith("postgresql"):
+    print(f"✅ [AdVerse] DB backend: Postgres (Supabase) — {DATABASE_URL.split('@')[-1]}")
+else:
+    print(
+        "⚠️  [AdVerse] DB backend: SQLite fallback! "
+        "DATABASE_URL is not set — on Render this file is WIPED on every "
+        "redeploy/restart. Set DATABASE_URL in Render → Environment to your "
+        "Supabase connection string to fix persistence."
+    )
+
 CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,  # we never send cookies, only a custom header — no need for credentialed CORS
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -174,14 +185,41 @@ def user_out(u: models.User) -> dict:
         "is_admin": u.is_admin,
         "is_paid": u.is_paid,
         "managed_agent_id": u.managed_agent_id,
+        "subscription_plan": u.subscription_plan,
+        "assigned_support_id": u.assigned_support_id,
         "balance": u.balance,
         "is_approved": u.is_approved,
         "subscription_end_date": u.subscription_end_date.isoformat() if u.subscription_end_date else None,
     }
 
 
-def agent_out(a: models.Agent, db: Session = None) -> dict:
+def _agent_stats(db: Session, agent_id: int, owner_id: int = None) -> dict:
+    """
+    Живая статистика агента. owner_id=None -> агрегат по ВСЕМ покупателям
+    (для админа/агента/саппорта). owner_id=<id> -> только связь этого
+    конкретного buyer/team с этим агентом (что видит сам buyer).
+    Раньше это были статичные числа в Agent.accounts/active/spend/balance,
+    которые не имели отношения к конкретному пользователю — отсюда жалоба
+    "аналитика агентов одинаковая у всех".
+    """
+    oq = db.query(models.Order).filter(models.Order.agent_id == agent_id)
+    aq = db.query(models.AdAccount).filter(models.AdAccount.agent_id == agent_id)
+    tq = db.query(models.Topup).filter(models.Topup.agent_id == agent_id, models.Topup.status == "confirmed")
+    if owner_id is not None:
+        oq = oq.filter(models.Order.owner_id == owner_id)
+        aq = aq.filter(models.AdAccount.owner_id == owner_id)
+        tq = tq.filter(models.Topup.owner_id == owner_id)
+
+    orders_count = oq.count()
+    active_accounts = aq.filter(models.AdAccount.status == "active").count()
+    spend_lifetime = aq.with_entities(func.coalesce(func.sum(models.AdAccount.spend_lifetime), 0.0)).scalar() or 0.0
+    balance = tq.with_entities(func.coalesce(func.sum(models.Topup.amount), 0.0)).scalar() or 0.0
+    return {"orders": orders_count, "active": active_accounts, "spend": spend_lifetime, "balance": balance}
+
+
+def agent_out(a: models.Agent, db: Session = None, owner_id: int = None) -> dict:
     avg_rating, review_count = None, 0
+    stats = {"orders": 0, "active": 0, "spend": 0, "balance": 0}
     if db is not None:
         row = (
             db.query(func.avg(models.Review.rating), func.count(models.Review.id))
@@ -190,6 +228,7 @@ def agent_out(a: models.Agent, db: Session = None) -> dict:
         )
         if row and row[1]:
             avg_rating, review_count = round(row[0], 1), row[1]
+        stats = _agent_stats(db, a.id, owner_id)
     return {
         "id": a.id,
         "name": a.name,
@@ -199,10 +238,10 @@ def agent_out(a: models.Agent, db: Session = None) -> dict:
         "avgRating": avg_rating,
         "reviewCount": review_count,
         "avgTime": a.avg_time,
-        "accounts": a.accounts,
-        "active": a.active,
-        "spend": a.spend,
-        "balance": a.balance,
+        "accounts": stats["orders"],
+        "active": stats["active"],
+        "spend": stats["spend"],
+        "balance": stats["balance"],
         "wallet": a.wallet,
         "minTopup": a.min_topup,
         "instruction": a.instruction,
@@ -218,6 +257,7 @@ def order_out(o: models.Order) -> dict:
         "qty": o.qty,
         "timezone": o.timezone,
         "pixel": o.pixel,
+        "pixelName": o.pixel_name,
         "bm": o.bm,
         "fanPages": o.fan_pages,
         "fanPageCount": o.fan_page_count,
@@ -293,6 +333,7 @@ class OrderCreateIn(BaseModel):
     qty: int
     timezone: str
     pixel: bool = False
+    pixelName: str = ""
     bm: str = "new"
     fanPages: bool = False
     fanPageCount: int = 0
@@ -326,6 +367,8 @@ class AdminUserUpdateIn(BaseModel):
     is_paid: Optional[bool] = None
     role: Optional[str] = None  # buyer | team | agent | support (admin is never set here)
     managed_agent_id: Optional[int] = None
+    subscription_plan: Optional[str] = None  # solo | team | unlimited
+    assigned_support_id: Optional[int] = None
 
 
 class ReviewIn(BaseModel):
@@ -341,6 +384,18 @@ class TicketCreateIn(BaseModel):
 
 class TicketMessageIn(BaseModel):
     message: str
+
+
+class AdAccountCreateIn(BaseModel):
+    name: str = ""
+    agent_id: Optional[int] = None
+    fb_account_id: str = ""
+    access_token: str = ""
+
+
+class AdAccountTokenIn(BaseModel):
+    fb_account_id: str
+    access_token: str
 
 
 # ───────────────────────── auth / registration ─────────────────────────
@@ -384,7 +439,8 @@ def list_agents(user: models.User = Depends(get_current_user), db: Session = Dep
     q = db.query(models.Agent)
     if not user.is_admin:
         q = q.filter(models.Agent.visible == True)  # noqa: E712
-    return [agent_out(a, db) for a in q.all()]
+    scope = None if (user.is_admin or user.role in ("agent", "support")) else user.id
+    return [agent_out(a, db, scope) for a in q.all()]
 
 
 @app.get("/api/admin/agents")
@@ -464,7 +520,7 @@ def list_orders(user: models.User = Depends(get_current_user), db: Session = Dep
 
 
 @app.post("/api/orders")
-def create_order(payload: OrderCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
+async def create_order(payload: OrderCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
     if user.role not in ("buyer", "team"):
         raise HTTPException(403, "Заказывать аккаунты может только Buyer/Team")
     agent = db.query(models.Agent).get(payload.agentId)
@@ -479,6 +535,7 @@ def create_order(payload: OrderCreateIn, user: models.User = Depends(require_pai
         qty=payload.qty,
         timezone=payload.timezone,
         pixel=payload.pixel,
+        pixel_name=payload.pixelName,
         bm=payload.bm,
         fan_pages=payload.fanPages,
         fan_page_count=payload.fanPageCount,
@@ -490,6 +547,18 @@ def create_order(payload: OrderCreateIn, user: models.User = Depends(require_pai
     db.add(o)
     db.commit()
     db.refresh(o)
+
+    who = user.username or user.first_name or user.telegram_id
+    recipients = set(ADMIN_IDS)
+    if user.assigned_support_id:
+        support = db.query(models.User).get(user.assigned_support_id)
+        if support:
+            recipients.add(support.telegram_id)
+    for chat_id in recipients:
+        await send_telegram_message(
+            chat_id,
+            f"🛒 *Новый заказ* {o.id} от @{who}\nАгент: {agent.name} · Кол-во: {o.qty}",
+        )
     return order_out(o)
 
 
@@ -502,8 +571,26 @@ def update_order_status(order_id: str, payload: OrderStatusIn, user: models.User
     is_privileged = user.is_admin or user.role in ("agent", "support")
     if not (is_owner or is_privileged):
         raise HTTPException(403, "Нет доступа к этому заказу")
+    was_fulfilled = o.status in ("ready", "completed")
     o.status = payload.status
     o.updated_at = datetime.utcnow()
+
+    # Агент выдал аккаунты → сразу создаём заготовки в "Моих аккаунтах" байера
+    # (имя + привязка к агенту уже проставлены), чтобы не набирать их вручную —
+    # остаётся только вставить токен и синхронизировать.
+    if payload.status in ("ready", "completed") and not was_fulfilled:
+        already = db.query(models.AdAccount).filter(models.AdAccount.order_id == o.id).count()
+        if not already:
+            agent = db.query(models.Agent).get(o.agent_id) if o.agent_id else None
+            agent_name = agent.name if agent else "агент"
+            for i in range(max(o.qty, 1)):
+                db.add(models.AdAccount(
+                    owner_id=o.owner_id,
+                    agent_id=o.agent_id,
+                    order_id=o.id,
+                    name=f"{agent_name} — {o.id} #{i + 1}",
+                    status="pending",
+                ))
     db.commit()
     return order_out(o)
 
@@ -520,7 +607,7 @@ def list_topups(user: models.User = Depends(get_current_user), db: Session = Dep
 
 
 @app.post("/api/topups")
-def create_topup(payload: TopupCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
+async def create_topup(payload: TopupCreateIn, user: models.User = Depends(require_paid_access), db: Session = Depends(get_db)):
     if user.role not in ("buyer", "team"):
         raise HTTPException(403, "Пополнять баланс может только Buyer/Team")
     agent = db.query(models.Agent).get(payload.agentId)
@@ -540,6 +627,18 @@ def create_topup(payload: TopupCreateIn, user: models.User = Depends(require_pai
     db.add(t)
     db.commit()
     db.refresh(t)
+
+    who = user.username or user.first_name or user.telegram_id
+    recipients = set(ADMIN_IDS)
+    if user.assigned_support_id:
+        support = db.query(models.User).get(user.assigned_support_id)
+        if support:
+            recipients.add(support.telegram_id)
+    for chat_id in recipients:
+        await send_telegram_message(
+            chat_id,
+            f"💰 *Новое пополнение* {t.id} от @{who}\nАгент: {agent.name} · Сумма: ${t.amount}",
+        )
     return topup_out(t)
 
 
@@ -561,9 +660,140 @@ def update_topup_status(topup_id: str, payload: TopupStatusIn, user: models.User
     return topup_out(t)
 
 
+def ad_account_out(a: models.AdAccount, db: Session = None) -> dict:
+    agent = None
+    if db is not None and a.agent_id:
+        agent = db.query(models.Agent).get(a.agent_id)
+    return {
+        "id": a.id,
+        "name": a.name or (f"act_{a.fb_account_id}" if a.fb_account_id else "Без названия"),
+        "agentId": a.agent_id,
+        "agentName": agent.name if agent else None,
+        "orderId": a.order_id,
+        "fbAccountId": a.fb_account_id,
+        "hasToken": bool(a.access_token),
+        "status": a.status,
+        "lastError": a.last_error,
+        "currency": a.currency,
+        "spend": {
+            "today": a.spend_today,
+            "week": a.spend_week,
+            "month": a.spend_month,
+            "lifetime": a.spend_lifetime,
+        },
+        "campaigns": a.campaigns,
+        "adsets": a.adsets,
+        "ads": a.ads,
+        "lastSyncedAt": a.last_synced_at.isoformat() if a.last_synced_at else None,
+        "createdAt": a.created_at.isoformat(),
+    }
+
+
+@app.get("/api/accounts")
+def list_accounts(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.is_admin or user.role in ("agent", "support"):
+        rows = db.query(models.AdAccount).all()
+    else:
+        rows = db.query(models.AdAccount).filter(models.AdAccount.owner_id == user.id).all()
+    return [ad_account_out(a, db) for a in rows]
+
+
+@app.post("/api/accounts")
+def create_account(payload: AdAccountCreateIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if payload.agent_id:
+        agent = db.query(models.Agent).get(payload.agent_id)
+        if not agent:
+            raise HTTPException(404, "Агент не найден")
+    fb_id = payload.fb_account_id.strip().replace("act_", "")
+    token = payload.access_token.strip()
+    a = models.AdAccount(
+        owner_id=user.id,
+        agent_id=payload.agent_id,
+        name=payload.name.strip(),
+        fb_account_id=fb_id or None,
+        access_token=token or None,
+        status="pending",  # станет active/error после первой синхронизации
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    return ad_account_out(a, db)
+
+
+@app.post("/api/accounts/{account_id}/token")
+def set_account_token(account_id: int, payload: AdAccountTokenIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Привязать/обновить токен для уже существующего (в т.ч. авто-созданного при выдаче заказа) кабинета."""
+    a = db.query(models.AdAccount).get(account_id)
+    if not a:
+        raise HTTPException(404, "Кабинет не найден")
+    if a.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Нет доступа к этому кабинету")
+    a.fb_account_id = payload.fb_account_id.strip().replace("act_", "")
+    a.access_token = payload.access_token.strip()
+    a.status = "pending"
+    a.last_error = None
+    db.commit()
+    return ad_account_out(a, db)
+
+
+@app.post("/api/accounts/{account_id}/sync")
+async def sync_account(account_id: int, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    a = db.query(models.AdAccount).get(account_id)
+    if not a:
+        raise HTTPException(404, "Кабинет не найден")
+    if a.owner_id != user.id and not (user.is_admin or user.role in ("agent", "support")):
+        raise HTTPException(403, "Нет доступа к этому кабинету")
+    if not a.fb_account_id or not a.access_token:
+        raise HTTPException(400, "Сначала укажите ID кабинета и токен доступа")
+
+    try:
+        fresh = await sync_ad_account(a.fb_account_id, a.access_token)
+    except FacebookAPIError as e:
+        a.status = "error"
+        a.last_error = e.message
+        a.last_synced_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(502, f"Facebook API: {e.message}")
+
+    a.name = fresh["name"] or a.name
+    a.currency = fresh["currency"] or a.currency
+    a.spend_today = fresh["spend_today"]
+    a.spend_week = fresh["spend_week"]
+    a.spend_month = fresh["spend_month"]
+    a.spend_lifetime = fresh["spend_lifetime"]
+    a.campaigns = fresh["campaigns"]
+    a.adsets = fresh["adsets"]
+    a.ads = fresh["ads"]
+    a.status = "active"
+    a.last_error = None
+    a.last_synced_at = datetime.utcnow()
+    db.commit()
+    return ad_account_out(a, db)
+
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: int, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    a = db.query(models.AdAccount).get(account_id)
+    if not a:
+        raise HTTPException(404, "Кабинет не найден")
+    if a.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "Нет доступа к этому кабинету")
+    db.delete(a)
+    db.commit()
+    return {"status": "ok"}
+
+
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+    db_backend = "postgres (Supabase)" if DATABASE_URL.startswith("postgresql") else "sqlite (⚠️ EPHEMERAL on Render — data will be lost on redeploy/restart)"
+    return {
+        "status": "ok",
+        "time": datetime.utcnow().isoformat(),
+        "db_backend": db_backend,
+        "admin_ids_configured": len(ADMIN_IDS),
+        "bot_token_configured": bool(os.environ.get("BOT_TOKEN")),
+        "cors_origins": CORS_ORIGINS,
+    }
 
 
 # ───────────────────────── admin: users & subscriptions ─────────────────────────
@@ -599,6 +829,17 @@ def admin_update_user(payload: AdminUserUpdateIn, admin: models.User = Depends(r
             raise HTTPException(404, "Агент не найден")
         target.managed_agent_id = payload.managed_agent_id or None
         changes["managed_agent_id"] = payload.managed_agent_id
+    if payload.subscription_plan is not None:
+        if payload.subscription_plan not in ("solo", "team", "unlimited", ""):
+            raise HTTPException(400, "Недопустимый тариф. Разрешены: solo, team, unlimited")
+        target.subscription_plan = payload.subscription_plan or None
+        changes["subscription_plan"] = payload.subscription_plan
+    if payload.assigned_support_id is not None:
+        support = db.query(models.User).get(payload.assigned_support_id) if payload.assigned_support_id else None
+        if payload.assigned_support_id and (not support or support.role != "support"):
+            raise HTTPException(400, "Этот пользователь не имеет роли Support")
+        target.assigned_support_id = payload.assigned_support_id or None
+        changes["assigned_support_id"] = payload.assigned_support_id
 
     db.commit()
     if changes:
@@ -621,6 +862,65 @@ def admin_extend_subscription(payload: ExtendSubscriptionIn, admin: models.User 
     return user_out(target)
 
 
+class AdminTicketReplyIn(BaseModel):
+    message: str
+
+
+@app.get("/api/admin/tickets")
+def admin_list_tickets(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    tickets = db.query(models.Ticket).order_by(models.Ticket.updated_at.desc()).all()
+    out = []
+    for t in tickets:
+        owner = db.query(models.User).get(t.owner_id)
+        out.append({
+            "id": t.id,
+            "subject": t.subject,
+            "status": t.status,
+            "owner": f"@{owner.username}" if owner and owner.username else f"tg:{t.owner_telegram_id}",
+            "ownerTelegramId": t.owner_telegram_id,
+            "createdAt": t.created_at.isoformat(),
+            "updatedAt": t.updated_at.isoformat(),
+            "messages": [
+                {"sender": m.sender, "text": m.text, "createdAt": m.created_at.isoformat()}
+                for m in t.messages
+            ],
+        })
+    return out
+
+
+@app.post("/api/admin/tickets/{ticket_id}/reply")
+async def admin_reply_ticket(ticket_id: int, payload: AdminTicketReplyIn, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    """
+    Надёжный канал ответа: работает всегда, даже если процесс bot.py не
+    запущен или отвал парсинг reply-сообщений в Telegram. Ответ сразу
+    сохраняется в БД (виден в приложении) и дублируется пользователю в
+    личку ботом.
+    """
+    ticket = db.query(models.Ticket).get(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Тикет не найден")
+    msg = models.TicketMessage(ticket_id=ticket.id, sender="admin", text=payload.message)
+    ticket.status = "answered"
+    ticket.updated_at = datetime.utcnow()
+    db.add(msg)
+    db.commit()
+
+    owner = db.query(models.User).get(ticket.owner_id)
+    if owner:
+        await send_telegram_message(
+            owner.telegram_id,
+            f"💬 *Ответ поддержки* (тикет #{ticket.id}):\n\n{payload.message}",
+        )
+    return {"status": "ok"}
+
+
+@app.get("/api/admin/support-users")
+def admin_list_support_users(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    """Список пользователей с ролью Support — для выпадающего списка 'закрепить саппорта за байером'."""
+    rows = db.query(models.User).filter(models.User.role == "support").all()
+    return [user_out(u) for u in rows]
+
+
 @app.get("/api/admin/audit-log")
 def admin_audit_log(admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.query(models.AuditLog).order_by(models.AuditLog.created_at.desc()).limit(200).all()
@@ -640,6 +940,26 @@ def admin_audit_log(admin: models.User = Depends(require_admin), db: Session = D
 
 
 # ───────────────────────── agent reviews / rating ─────────────────────────
+
+@app.get("/api/agents/{agent_id}/reviews")
+def list_reviews(agent_id: int, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = (
+        db.query(models.Review)
+        .filter(models.Review.agent_id == agent_id)
+        .order_by(models.Review.created_at.desc())
+        .all()
+    )
+    out = []
+    for r in rows:
+        author = db.query(models.User).get(r.user_id)
+        out.append({
+            "rating": r.rating,
+            "comment": r.comment,
+            "author": f"@{author.username}" if author and author.username else "Аноним",
+            "createdAt": r.created_at.isoformat(),
+        })
+    return out
+
 
 @app.post("/api/agents/{agent_id}/review")
 def create_review(agent_id: int, payload: ReviewIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -678,6 +998,21 @@ def list_tickets(user: models.User = Depends(get_current_user), db: Session = De
     ]
 
 
+async def _notify_ticket_recipients(db: Session, ticket: models.Ticket, text: str):
+    """Send the Telegram DM to the admin(s) and the assigned support (if any), recording each (chat_id, message_id) so a reply from ANY of them can be matched back to this ticket."""
+    owner = db.query(models.User).get(ticket.owner_id)
+    recipients = set(ADMIN_IDS)
+    if owner and owner.assigned_support_id:
+        support = db.query(models.User).get(owner.assigned_support_id)
+        if support:
+            recipients.add(support.telegram_id)
+    for chat_id in recipients:
+        sent = await send_telegram_message(chat_id, text)
+        if sent:
+            db.add(models.TicketNotification(ticket_id=ticket.id, chat_id=chat_id, message_id=sent["message_id"]))
+    db.commit()
+
+
 @app.post("/api/support/tickets")
 async def create_ticket(payload: TicketCreateIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     ticket = models.Ticket(owner_id=user.id, owner_telegram_id=user.telegram_id, subject=payload.subject)
@@ -686,22 +1021,16 @@ async def create_ticket(payload: TicketCreateIn, user: models.User = Depends(get
     db.refresh(ticket)
 
     who = user.username or user.first_name or user.telegram_id
-    admin_msg = None
-    if ADMIN_IDS:
-        primary_admin = sorted(ADMIN_IDS)[0]
-        admin_msg = await send_telegram_message(
-            primary_admin,
-            f"🎫 *Новый тикет #{ticket.id}* от @{who} (id `{user.telegram_id}`)\n"
-            f"_{payload.subject}_\n\n{payload.message}\n\n"
-            f"↩️ Ответьте на это сообщение, чтобы ответ ушёл пользователю в приложение и в личку.",
-        )
-
-    msg = models.TicketMessage(
-        ticket_id=ticket.id, sender="user", text=payload.message,
-        admin_msg_id=admin_msg["message_id"] if admin_msg else None,
-    )
+    msg = models.TicketMessage(ticket_id=ticket.id, sender="user", text=payload.message)
     db.add(msg)
     db.commit()
+
+    await _notify_ticket_recipients(
+        db, ticket,
+        f"🎫 *Новый тикет #{ticket.id}* от @{who} (id `{user.telegram_id}`)\n"
+        f"_{payload.subject}_\n\n{payload.message}\n\n"
+        f"↩️ Ответьте на это сообщение, чтобы ответ ушёл пользователю в приложение и в личку.",
+    )
     return {"id": ticket.id, "status": ticket.status}
 
 
@@ -712,20 +1041,15 @@ async def add_ticket_message(ticket_id: int, payload: TicketMessageIn, user: mod
         raise HTTPException(404, "Тикет не найден")
 
     who = user.username or user.first_name or user.telegram_id
-    admin_msg = None
-    if ADMIN_IDS:
-        primary_admin = sorted(ADMIN_IDS)[0]
-        admin_msg = await send_telegram_message(
-            primary_admin,
-            f"🎫 *Тикет #{ticket.id}* — новое сообщение от @{who}:\n\n{payload.message}",
-        )
-
-    msg = models.TicketMessage(
-        ticket_id=ticket.id, sender="user", text=payload.message,
-        admin_msg_id=admin_msg["message_id"] if admin_msg else None,
-    )
+    msg = models.TicketMessage(ticket_id=ticket.id, sender="user", text=payload.message)
     ticket.status = "open"
     ticket.updated_at = datetime.utcnow()
     db.add(msg)
     db.commit()
+
+    await _notify_ticket_recipients(
+        db, ticket,
+        f"🎫 *Тикет #{ticket.id}* — новое сообщение от @{who}:\n\n{payload.message}\n\n"
+        f"↩️ Ответьте на это сообщение, чтобы ответ ушёл пользователю.",
+    )
     return {"status": "ok"}

@@ -1,0 +1,12 @@
+# Secrets — NEVER commit real credentials to this public repo
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.db
+
+# Node (if any tooling added later)
+node_modules/

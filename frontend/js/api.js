@@ -104,10 +104,22 @@ const Api = {
   adminAuditLog() {
     return this.request("/api/admin/audit-log");
   },
+  adminListSupportUsers() {
+    return this.request("/api/admin/support-users");
+  },
+  adminListTickets() {
+    return this.request("/api/admin/tickets");
+  },
+  adminReplyTicket(ticketId, message) {
+    return this.request(`/api/admin/tickets/${ticketId}/reply`, { method: "POST", body: { message } });
+  },
 
   // ── reviews ──
   createReview(agentId, payload) {
     return this.request(`/api/agents/${agentId}/review`, { method: "POST", body: payload });
+  },
+  listReviews(agentId) {
+    return this.request(`/api/agents/${agentId}/reviews`);
   },
 
   // ── support tickets ──
@@ -119,6 +131,23 @@ const Api = {
   },
   addTicketMessage(ticketId, message) {
     return this.request(`/api/support/tickets/${ticketId}/messages`, { method: "POST", body: { message } });
+  },
+
+  // ── ad accounts (real Facebook Marketing API integration) ──
+  listAccounts() {
+    return this.request("/api/accounts");
+  },
+  createAccount(payload) {
+    return this.request("/api/accounts", { method: "POST", body: payload });
+  },
+  syncAccount(id) {
+    return this.request(`/api/accounts/${id}/sync`, { method: "POST" });
+  },
+  setAccountToken(id, fb_account_id, access_token) {
+    return this.request(`/api/accounts/${id}/token`, { method: "POST", body: { fb_account_id, access_token } });
+  },
+  deleteAccount(id) {
+    return this.request(`/api/accounts/${id}`, { method: "DELETE" });
   },
 };
 
@@ -135,15 +164,17 @@ class ApiError extends Error {
  * Call this once right after login/registration succeeds.
  */
 async function loadAppData() {
-  const [agents, orders, topups] = await Promise.all([
+  const [agents, orders, topups, accounts] = await Promise.all([
     Api.listAgents(),
     Api.listOrders(),
     Api.listTopups(),
+    Api.listAccounts(),
   ]);
   AGENTS.length = 0;
   AGENTS.push(...agents.map(fromApiAgent));
   state.orders = orders.map(fromApiOrder);
   state.topups = topups.map(fromApiTopup);
+  state.accounts = accounts.map(fromApiAccount);
   state.dataLoaded = true;
 }
 
@@ -156,4 +187,7 @@ function fromApiOrder(o) {
 }
 function fromApiTopup(t) {
   return { ...t };
+}
+function fromApiAccount(a) {
+  return { ...a };
 }

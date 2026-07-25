@@ -56,7 +56,6 @@ log = logging.getLogger("adverse-bot")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 MINI_APP_URL = os.environ.get("MINI_APP_URL", "").strip().rstrip("/")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "").strip().lstrip("@")
-ADMIN_ID_INTS = {int(x) for x in ADMIN_IDS if x.isdigit()}
 
 
 def open_crm_keyboard() -> InlineKeyboardMarkup:
@@ -124,10 +123,12 @@ async def myid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Админ отвечает (reply) в личке боту на пересланное сообщение о тикете →
-    находим тикет по message_id уведомления, сохраняем ответ в БД и шлём его
-    пользователю в личку. Пользователь увидит этот же ответ и в Mini App
-    (эндпоинт GET /api/support/tickets).
+    Админ или закреплённый саппорт отвечает (reply) в личке боту на
+    пересланное уведомление о тикете → находим тикет по паре
+    (chat_id, message_id) этого уведомления (message_id один в один совпадает
+    только внутри своего чата, поэтому chat_id обязателен для однозначности),
+    сохраняем ответ в БД и шлём его пользователю в личку. Пользователь увидит
+    этот же ответ и в Mini App (эндпоинт GET /api/support/tickets).
     """
     msg = update.message
     if not msg or not msg.reply_to_message or not msg.text:
@@ -135,13 +136,14 @@ async def admin_reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     db = SessionLocal()
     try:
-        source = db.query(models.TicketMessage).filter(
-            models.TicketMessage.admin_msg_id == msg.reply_to_message.message_id
+        notif = db.query(models.TicketNotification).filter(
+            models.TicketNotification.chat_id == str(update.effective_chat.id),
+            models.TicketNotification.message_id == msg.reply_to_message.message_id,
         ).first()
-        if not source:
+        if not notif:
             return  # not a reply to a ticket notification — ignore
 
-        ticket = db.query(models.Ticket).get(source.ticket_id)
+        ticket = db.query(models.Ticket).get(notif.ticket_id)
         if not ticket:
             return
 
@@ -226,15 +228,9 @@ def main() -> None:
     application.add_handler(CommandHandler("crm", app_cmd))
     application.add_handler(CommandHandler("myid", myid_cmd))
 
-    if ADMIN_ID_INTS:
-        application.add_handler(
-            MessageHandler(
-                filters.REPLY & filters.User(user_id=list(ADMIN_ID_INTS)) & filters.TEXT,
-                admin_reply_handler,
-            )
-        )
-    else:
-        log.warning("ADMIN_IDS не задан — ответы в тикеты поддержки работать не будут.")
+    application.add_handler(
+        MessageHandler(filters.REPLY & filters.TEXT, admin_reply_handler)
+    )
 
     if application.job_queue:
         application.job_queue.run_repeating(check_subscription_expirations, interval=21600, first=60)

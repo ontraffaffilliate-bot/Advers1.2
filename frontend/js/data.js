@@ -10,92 +10,9 @@ let AGENTS = [];
 let ORDERS = [];
 let TOPUPS = [];
 
-// NOTE: Accounts / Tickets / Notifications are still local demo data in this
-// pass — they don't touch owner_id isolation or money, so they were kept out
-// of scope for the v1 backend. Wire these to real endpoints the same way
-// AGENTS/orders/topups were done, when you're ready to extend the API.
-const ACCOUNTS = [
-  {
-    id: "ACC-1001",
-    name: "FB Account ES-01",
-    agentId: 1,
-    agentName: "Agent #1",
-    issuedAt: "2026-06-15",
-    status: "active",
-    balance: 420,
-    lastActivity: "1h ago",
-    apiConnected: true,
-    spend: { today: 120, week: 890, month: 4200, lifetime: 18500 },
-    campaigns: 12,
-    adsets: 34,
-    ads: 89,
-    errors: 0,
-  },
-  {
-    id: "ACC-1002",
-    name: "FB Account ES-02",
-    agentId: 1,
-    agentName: "Agent #1",
-    issuedAt: "2026-06-15",
-    status: "active",
-    balance: 180,
-    lastActivity: "3h ago",
-    apiConnected: true,
-    spend: { today: 85, week: 620, month: 3100, lifetime: 14200 },
-    campaigns: 8,
-    adsets: 22,
-    ads: 56,
-    errors: 1,
-  },
-  {
-    id: "ACC-1003",
-    name: "FB Account CRYPTO-01",
-    agentId: 3,
-    agentName: "Agent #3",
-    issuedAt: "2026-07-02",
-    status: "active",
-    balance: 950,
-    lastActivity: "20m ago",
-    apiConnected: false,
-    spend: null,
-    campaigns: 0,
-    adsets: 0,
-    ads: 0,
-    errors: 0,
-  },
-  {
-    id: "ACC-1004",
-    name: "FB Account NUTRA-01",
-    agentId: 2,
-    agentName: "Agent #2",
-    issuedAt: "2026-05-20",
-    status: "disabled",
-    balance: 0,
-    lastActivity: "12d ago",
-    apiConnected: true,
-    spend: { today: 0, week: 0, month: 0, lifetime: 9800 },
-    campaigns: 0,
-    adsets: 0,
-    ads: 0,
-    errors: 3,
-  },
-  {
-    id: "ACC-1005",
-    name: "FB Account US-01",
-    agentId: 1,
-    agentName: "Agent #1",
-    issuedAt: "2026-07-09",
-    status: "active",
-    balance: 600,
-    lastActivity: "45m ago",
-    apiConnected: false,
-    spend: null,
-    campaigns: 0,
-    adsets: 0,
-    ads: 0,
-    errors: 0,
-  },
-];
+// Accounts (Facebook ad account integration) are now real — loaded from
+// the backend via Api.listAccounts() into state.accounts. See main.py
+// (AdAccount model) and facebook_api.py for the actual Graph API sync.
 
 const TICKETS = [
   {
@@ -326,7 +243,7 @@ function getInitialState() {
     role: null,
     orders: [], // filled by loadOrders() from the API
     topups: [], // filled by loadTopups() from the API
-    accounts: JSON.parse(JSON.stringify(ACCOUNTS)),
+    accounts: [], // filled by loadAppData() from the real Facebook integration
     tickets: JSON.parse(JSON.stringify(TICKETS)),
     notifications: JSON.parse(JSON.stringify(NOTIFICATIONS)),
     currentPlan: "team",
@@ -354,15 +271,15 @@ function totalBalance(agents = AGENTS) {
   return agents.reduce((s, a) => s + a.balance, 0);
 }
 
-function totalSpend(accounts = ACCOUNTS) {
+function totalSpend(accounts = []) {
   return accounts
-    .filter((a) => a.apiConnected && a.spend)
+    .filter((a) => a.status === "active" && a.spend)
     .reduce(
       (acc, a) => ({
-        today: acc.today + a.spend.today,
-        week: acc.week + a.spend.week,
-        month: acc.month + a.spend.month,
-        lifetime: acc.lifetime + a.spend.lifetime,
+        today: acc.today + (a.spend.today || 0),
+        week: acc.week + (a.spend.week || 0),
+        month: acc.month + (a.spend.month || 0),
+        lifetime: acc.lifetime + (a.spend.lifetime || 0),
       }),
       { today: 0, week: 0, month: 0, lifetime: 0 }
     );
