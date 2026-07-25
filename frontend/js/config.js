@@ -5,7 +5,7 @@ const APP_CONFIG = {
   // ⚠️ Замени на реальный HTTPS-адрес твоего FastAPI бэкенда (см. backend/).
   // Временный туннель (serveo/ngrok) годится только для разработки — для
   // продакшна нужен постоянный хостинг (Railway/Render/Fly/VPS), см. README.
-  apiBaseUrl: "https://adverse-backend-rhgr.onrender.com",
+  apiBaseUrl: "https://your-backend-domain.example.com",
   supportUsername: "adverse_support",
   allowRolePickerInTelegram: true,
   autoLoginInTelegram: false,

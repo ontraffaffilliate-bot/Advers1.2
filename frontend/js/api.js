@@ -113,6 +113,19 @@ const Api = {
   adminReplyTicket(ticketId, message) {
     return this.request(`/api/admin/tickets/${ticketId}/reply`, { method: "POST", body: { message } });
   },
+  health() {
+    return this.request("/api/health", { auth: false });
+  },
+  // ── support staff ──
+  supportMyTickets() {
+    return this.request("/api/support/my-tickets");
+  },
+  supportReplyTicket(ticketId, message) {
+    return this.request(`/api/support/tickets/${ticketId}/reply`, { method: "POST", body: { message } });
+  },
+  supportMyOrders() {
+    return this.request("/api/support/my-orders");
+  },
 
   // ── reviews ──
   createReview(agentId, payload) {

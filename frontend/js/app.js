@@ -8,7 +8,8 @@ let wizard = {
   qty: 10,
   timezone: "UTC+2",
   pixel: true,
-  pixelName: "",
+  pixelCount: 1,
+  pixelNames: [""],
   bm: "new",
   fanPages: false,
   fanPageCount: 3,
@@ -109,6 +110,9 @@ function showPage(pageId) {
     "admin-orders": renderAdminOrders,
     "admin-logs": renderAdminLogs,
     "admin-tickets": renderAdminTickets,
+    "admin-topups": renderAdminTopups,
+    "admin-health": renderAdminHealth,
+    "admin-settings": renderAdminSettings,
   };
 
   if (renderers[pageId]) renderers[pageId]();
@@ -658,7 +662,8 @@ function openOrderWizard() {
     qty: 10,
     timezone: "UTC+2",
     pixel: true,
-    pixelName: "",
+    pixelCount: 1,
+    pixelNames: [""],
     bm: "new",
     fanPages: false,
     fanPageCount: 3,
@@ -812,8 +817,15 @@ function renderWizardStep3(body) {
         </button>
       </div>
       <div id="pixel-fields" class="${wizard.pixel ? "" : "hidden"} mt-12">
-        <label class="form-label">Название Pixel</label>
-        <input class="form-input" id="wiz-pixel-name" placeholder="ES_Casino_Pixel" value="${wizard.pixelName || ""}" />
+        <label class="form-label">Количество</label>
+        <input type="number" class="form-input mb-12" id="pixel-count" min="1" max="20" value="${wizard.pixelCount}" />
+        <div class="fanpage-list" id="pixel-names">
+          ${Array.from({ length: wizard.pixelCount }, (_, i) => `
+            <div class="fanpage-row">
+              <input class="form-input" placeholder="ES_Casino_Pixel_${i + 1}" data-pixel-name="${i}" value="${wizard.pixelNames[i] || ""}" />
+            </div>
+          `).join("")}
+        </div>
       </div>
     </div>
 
@@ -875,7 +887,20 @@ function renderWizardStep3(body) {
       renderWizard();
     };
   });
-  $("#wiz-pixel-name", body)?.addEventListener("input", (e) => (wizard.pixelName = e.target.value));
+  const pixelCountInput = $("#pixel-count", body);
+  if (pixelCountInput) {
+    pixelCountInput.onchange = (e) => {
+      wizard.pixelCount = Math.min(20, Math.max(1, parseInt(e.target.value, 10) || 1));
+      while (wizard.pixelNames.length < wizard.pixelCount) wizard.pixelNames.push("");
+      wizard.pixelNames = wizard.pixelNames.slice(0, wizard.pixelCount);
+      renderWizard();
+    };
+  }
+  body.querySelectorAll("[data-pixel-name]").forEach((inp) => {
+    inp.oninput = () => {
+      wizard.pixelNames[parseInt(inp.dataset.pixelName, 10)] = inp.value;
+    };
+  });
   body.querySelectorAll("[data-bm]").forEach((b) => {
     b.onclick = () => {
       wizard.bm = b.dataset.bm;
@@ -915,7 +940,7 @@ function renderWizardStep4(body) {
         <div class="flex justify-between"><span class="text-muted">Агент</span><strong>${agent ? agent.name : "—"}</strong></div>
         <div class="flex justify-between"><span class="text-muted">Количество</span><strong>${wizard.qty}</strong></div>
         <div class="flex justify-between"><span class="text-muted">Timezone</span><strong>${wizard.timezone}</strong></div>
-        <div class="flex justify-between"><span class="text-muted">Pixel</span><strong>${wizard.pixel ? "Авто" : "Нет"}</strong></div>
+        <div class="flex justify-between"><span class="text-muted">Pixel</span><strong>${wizard.pixel ? wizard.pixelCount : "Нет"}</strong></div>
         <div class="flex justify-between"><span class="text-muted">BM</span><strong>${wizard.bm === "new" ? "Новый" : "Существующий"}</strong></div>
         <div class="flex justify-between"><span class="text-muted">Fan Pages</span><strong>${wizard.fanPages ? wizard.fanPageCount : "Нет"}</strong></div>
         <div class="flex justify-between"><span class="text-muted">AdsPower</span><strong class="font-mono">${wizard.adsPower || "—"}</strong></div>
@@ -951,7 +976,7 @@ async function submitOrderToServer(agent) {
       qty: wizard.qty,
       timezone: wizard.timezone,
       pixel: wizard.pixel,
-      pixelName: wizard.pixel ? wizard.pixelName : "",
+      pixelNames: wizard.pixel ? wizard.pixelNames.filter(Boolean) : [],
       bm: wizard.bm,
       fanPages: wizard.fanPages,
       fanPageCount: wizard.fanPageCount,
@@ -1368,6 +1393,12 @@ function renderMore() {
     </div>
   `;
 
+  const agentItems = `
+    <div class="settings-group">
+      <div class="settings-row" onclick="showPage('support')"><span>🎧 Написать в Support</span><span class="arrow">›</span></div>
+    </div>
+  `;
+
   el.innerHTML = `
     <h1 class="page-title">Ещё</h1>
     <p class="page-sub">Настройки и разделы</p>
@@ -1379,13 +1410,17 @@ function renderMore() {
     </div>
 
     ${["buyer", "team"].includes(state.role) ? buyerItems : ""}
+    ${state.role === "agent" ? agentItems : ""}
 
     ${
       state.isAdmin
         ? `<div class="settings-group">
             <div class="settings-row" onclick="showPage('admin-agents')"><span>⚙️ Управление агентами</span><span class="arrow">›</span></div>
             <div class="settings-row" onclick="showPage('admin-users')"><span>🛡️ Пользователи (Центр управления)</span><span class="arrow">›</span></div>
+            <div class="settings-row" onclick="showPage('admin-topups')"><span>💰 Пополнения</span><span class="arrow">›</span></div>
             <div class="settings-row" onclick="showPage('admin-tickets')"><span>🎫 Тикеты поддержки</span><span class="arrow">›</span></div>
+            <div class="settings-row" onclick="showPage('admin-settings')"><span>🔧 Настройки</span><span class="arrow">›</span></div>
+            <div class="settings-row" onclick="showPage('admin-health')"><span>🟢 Статусы</span><span class="arrow">›</span></div>
             <div class="settings-row" onclick="showPage('admin-logs')"><span>📜 Аудит-лог</span><span class="arrow">›</span></div>
           </div>`
         : ""
@@ -1508,15 +1543,22 @@ function renderPricing() {
     return;
   }
 
+  // Тариф назначает только админ (см. /api/admin/users/update) — раньше
+  // кнопка "Выбрать" просто меняла state.currentPlan локально, без единого
+  // запроса на бэкенд, то есть любой оплативший buyer мог "включить" себе
+  // Unlimited бесплатно в один клик на клиенте. Теперь тарифы — read-only
+  // витрина текущего плана, смена — только через заявку в поддержку.
+  const myPlan = state.currentUser?.subscription_plan || null;
+
   el.innerHTML = `
     <h1 class="page-title">Тарифы</h1>
-    <p class="page-sub">Доход платформы — только подписка</p>
+    <p class="page-sub">${myPlan ? "Ваш текущий тариф отмечен ниже" : "Тариф ещё не назначен — обратитесь в поддержку"}</p>
 
     <div class="pricing-grid">
       ${PLANS.map(
         (p) => `
-        <div class="plan-card ${p.featured ? "featured" : ""} ${state.currentPlan === p.id ? "current" : ""}">
-          ${state.currentPlan === p.id ? `<div class="plan-current-badge">Текущий тариф</div>` : ""}
+        <div class="plan-card ${p.featured ? "featured" : ""} ${myPlan === p.id ? "current" : ""}">
+          ${myPlan === p.id ? `<div class="plan-current-badge">Текущий тариф</div>` : ""}
           <div class="plan-name">${p.name}</div>
           <div class="plan-price">$${p.price}<span>/мес</span></div>
           <div class="plan-desc">${p.desc}</div>
@@ -1524,9 +1566,9 @@ function renderPricing() {
             ${p.features.map((f) => `<li>${f}</li>`).join("")}
           </ul>
           ${
-            state.currentPlan === p.id
+            myPlan === p.id
               ? `<button type="button" class="btn btn-secondary w-full" disabled>Активен</button>`
-              : `<button type="button" class="btn btn-primary w-full" onclick="selectPlan('${p.id}')">Выбрать</button>`
+              : `<button type="button" class="btn btn-primary w-full" onclick="requestPlanChange('${p.id}')">Запросить смену</button>`
           }
         </div>
       `
@@ -1535,15 +1577,15 @@ function renderPricing() {
   `;
 }
 
-function selectPlan(id) {
-  state.currentPlan = id;
-  const p = PLANS.find((x) => x.id === id);
-  if (state.role === "buyer" || state.role === "team") {
-    state.sessionRole.plan = p.name;
-    updateHeader(state.sessionRole);
+async function requestPlanChange(planId) {
+  const p = PLANS.find((x) => x.id === planId);
+  try {
+    await Api.createTicket("Смена тарифа", `Прошу перевести меня на тариф "${p.name}" ($${p.price}/мес).`);
+    toast("Заявка на смену тарифа отправлена в поддержку", "success");
+    showPage("support");
+  } catch (e) {
+    toast(e.message || "Не удалось отправить заявку", "error");
   }
-  renderPricing();
-  toast(`Тариф ${p.name} выбран`, "success");
 }
 
 // ─── Support ───
@@ -2072,164 +2114,232 @@ function agentUpdateBalance() {
 function renderSupportHome() {
   const el = $("#page-support-home");
   if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:100px"></div>`;
 
-  el.innerHTML = `
-    <h1 class="page-title">Support Desk</h1>
-    <p class="page-sub">Тикеты и обращения</p>
+  Promise.all([Api.supportMyTickets(), Api.supportMyOrders()])
+    .then(([tickets, orders]) => {
+      state.supportTickets = tickets;
+      state.supportOrders = orders;
+      const openCount = tickets.filter((t) => t.status !== "closed").length;
+      el.innerHTML = `
+        <h1 class="page-title">Support Desk</h1>
+        <p class="page-sub">Тикеты и заказы закреплённых за вами покупателей</p>
 
-    <div class="kpi-grid">
-      <div class="kpi-card agents">
-        <div class="kpi-label">Open tickets</div>
-        <div class="kpi-value">${state.tickets.filter((t) => t.status === "open").length}</div>
-      </div>
-      <div class="kpi-card accounts">
-        <div class="kpi-label">Все заказы</div>
-        <div class="kpi-value">${state.orders.length}</div>
-      </div>
-    </div>
+        <div class="kpi-grid">
+          <div class="kpi-card agents">
+            <div class="kpi-label">Открытых тикетов</div>
+            <div class="kpi-value">${openCount}</div>
+          </div>
+          <div class="kpi-card accounts">
+            <div class="kpi-label">Заказы</div>
+            <div class="kpi-value">${orders.length}</div>
+          </div>
+        </div>
 
-    <div class="disclaimer-box">
-      <strong>Ограничение доступа</strong>
-      Support не имеет доступа к Facebook аккаунтам пользователей.
-    </div>
+        <div class="disclaimer-box">
+          <strong>Ограничение доступа</strong>
+          Support не имеет доступа к Facebook-токенам аккаунтов пользователей — только к тикетам и заказам.
+        </div>
 
-    <div class="admin-grid">
-      <div class="admin-tile" onclick="showPage('support-tickets')">
-        <div class="icon">🎫</div>
-        <h4>Тикеты</h4>
-      </div>
-      <div class="admin-tile" onclick="showPage('support-orders')">
-        <div class="icon">📦</div>
-        <h4>Заказы</h4>
-      </div>
-    </div>
-  `;
+        <div class="admin-grid">
+          <div class="admin-tile" onclick="showPage('support-tickets')">
+            <div class="icon">🎫</div>
+            <h4>Тикеты</h4>
+            <p>${openCount} открыто</p>
+          </div>
+          <div class="admin-tile" onclick="showPage('support-orders')">
+            <div class="icon">📦</div>
+            <h4>Заказы</h4>
+            <p>${orders.length} всего</p>
+          </div>
+        </div>
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Не удалось загрузить: ${e.message}</p>`;
+    });
 }
 
 function renderSupportTickets() {
   const el = $("#page-support-tickets");
   if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:80px"></div>`;
 
-  el.innerHTML = `
-    <h1 class="page-title">Тикеты</h1>
-    <div class="ticket-list mt-16">
-      ${state.tickets
+  Api.supportMyTickets()
+    .then((tickets) => {
+      state.supportTickets = tickets;
+      el.innerHTML = `
+        <h1 class="page-title">Тикеты</h1>
+        <p class="page-sub">Только от закреплённых за вами покупателей/агентов</p>
+        <div class="ticket-list mt-16">
+          ${
+            tickets.length
+              ? tickets
+                  .map(
+                    (t) => `
+            <div class="ticket-card" onclick="supportOpenTicket(${t.id})">
+              <div class="ticket-card-header">
+                <span class="order-id">TKT-${t.id}</span>
+                <span class="status status-${t.status}">${STATUS_LABELS[t.status] || t.status}</span>
+              </div>
+              <div style="font-weight:600;font-size:13px">${t.subject}</div>
+              <div class="order-meta mt-8">
+                <span class="badge badge-muted">${t.owner}${t.ownerRole ? " · " + t.ownerRole : ""}</span>
+              </div>
+            </div>
+          `
+                  )
+                  .join("")
+              : `<p class="text-secondary text-sm">Пока нет тикетов на вас</p>`
+          }
+        </div>
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Не удалось загрузить тикеты: ${e.message}</p>`;
+    });
+}
+
+function supportOpenTicket(id) {
+  const t = (state.supportTickets || []).find((x) => x.id === id);
+  if (!t) return;
+  openSheet(
+    `TKT-${t.id} · ${t.owner}`,
+    `
+    <div class="flex gap-8 mb-12">
+      <span class="status status-${t.status}">${STATUS_LABELS[t.status] || t.status}</span>
+    </div>
+    <h3 style="font-size:16px;font-weight:700;margin-bottom:8px">${t.subject}</h3>
+    <div class="mb-16" style="display:flex;flex-direction:column;gap:8px">
+      ${t.messages
         .map(
-          (t) => `
-        <div class="ticket-card" onclick="supportOpenTicket('${t.id}')">
-          <div class="ticket-card-header">
-            <span class="order-id">${t.id}</span>
-            <span class="status status-${t.status}">${STATUS_LABELS[t.status]}</span>
-          </div>
-          <div style="font-weight:600;font-size:13px">${t.subject}</div>
-          <div class="order-meta mt-8">
-            <span class="badge badge-muted">${CATEGORY_LABELS[t.category]}</span>
-          </div>
+          (m) => `
+        <div style="align-self:${m.sender === "admin" ? "flex-end" : "flex-start"};max-width:85%;padding:8px 12px;border-radius:12px;background:${m.sender === "admin" ? "var(--accent-soft)" : "var(--bg-glass-strong)"}">
+          <div class="text-xs text-secondary mb-4">${m.sender === "admin" ? "Вы (поддержка)" : t.owner} · ${new Date(m.createdAt).toLocaleString("ru-RU")}</div>
+          <div class="text-sm">${escapeHtml(m.text)}</div>
         </div>
       `
         )
         .join("")}
     </div>
-  `;
-}
-
-function supportOpenTicket(id) {
-  const t = state.tickets.find((x) => x.id === id);
-  if (!t) return;
-  openSheet(
-    t.id,
-    `
-    <div class="flex gap-8 mb-12">
-      <span class="badge badge-muted">${CATEGORY_LABELS[t.category]}</span>
-      <span class="status status-${t.status}">${STATUS_LABELS[t.status]}</span>
-    </div>
-    <h3 style="font-size:16px;font-weight:700;margin-bottom:8px">${t.subject}</h3>
-    <p class="text-sm text-secondary mb-16">${t.message}</p>
     <div class="form-group">
-      <textarea class="form-textarea" id="sup-reply" placeholder="Ответ support..."></textarea>
+      <textarea class="form-textarea" id="sup-reply" placeholder="Ответ..."></textarea>
     </div>
-    <div class="flex gap-8">
-      <button type="button" class="btn btn-primary" onclick="supportReply('${t.id}')">Ответить</button>
-      ${
-        t.status === "open"
-          ? `<button type="button" class="btn btn-success" onclick="supportResolve('${t.id}')">Resolve</button>`
-          : ""
-      }
-    </div>
+    <button type="button" class="btn btn-primary" onclick="supportReply(${t.id})">Ответить</button>
   `
   );
 }
 
-function supportReply(id) {
-  const t = state.tickets.find((x) => x.id === id);
-  if (t) t.replies++;
-  closeSheet();
-  toast("Ответ отправлен", "success");
-}
-
-function supportResolve(id) {
-  const t = state.tickets.find((x) => x.id === id);
-  if (t) t.status = "resolved";
-  closeSheet();
-  renderSupportTickets();
-  toast("Тикет закрыт", "success");
+async function supportReply(id) {
+  const msg = $("#sup-reply")?.value?.trim();
+  if (!msg) {
+    toast("Введите сообщение", "error");
+    return;
+  }
+  try {
+    await Api.supportReplyTicket(id, msg);
+    closeSheet();
+    renderSupportTickets();
+    toast("Ответ отправлен", "success");
+  } catch (e) {
+    toast(e.message || "Не удалось отправить ответ", "error");
+  }
 }
 
 function renderSupportOrders() {
   const el = $("#page-support-orders");
   if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:80px"></div>`;
 
-  el.innerHTML = `
-    <h1 class="page-title">Все заказы</h1>
-    <p class="page-sub">Только просмотр</p>
-    <div class="order-list mt-16">
-      ${state.orders
-        .map(
-          (o) => `
-        <div class="order-card">
-          <div class="order-card-header">
-            <span class="order-id">${o.id}</span>
-            <span class="status status-${o.status}">${STATUS_LABELS[o.status]}</span>
-          </div>
-          <div class="order-meta">
-            <span>${o.agentName}</span>
-            <span>${o.qty} акк.</span>
-          </div>
+  Api.supportMyOrders()
+    .then((orders) => {
+      state.supportOrders = orders;
+      el.innerHTML = `
+        <h1 class="page-title">Заказы</h1>
+        <p class="page-sub">Покупателей, закреплённых за вами — можно менять статус</p>
+        <div class="order-list mt-16">
+          ${
+            orders.length
+              ? orders
+                  .map(
+                    (o) => `
+            <div class="order-card">
+              <div class="order-card-header">
+                <span class="order-id">${o.id}</span>
+                <span class="status status-${o.status}">${STATUS_LABELS[o.status] || o.status}</span>
+              </div>
+              <div class="order-meta mb-8">
+                <span>${o.agentName || "—"}</span>
+                <span>${o.qty} акк.</span>
+              </div>
+              <select class="form-select" onchange="supportUpdateOrderStatus('${o.id}', this.value)">
+                ${["created", "accepted", "preparing", "ready", "completed", "cancelled"]
+                  .map((s) => `<option value="${s}" ${o.status === s ? "selected" : ""}>${STATUS_LABELS[s] || s}</option>`)
+                  .join("")}
+              </select>
+            </div>
+          `
+                  )
+                  .join("")
+              : `<p class="text-secondary text-sm">Нет заказов у закреплённых покупателей</p>`
+          }
         </div>
-      `
-        )
-        .join("")}
-    </div>
-  `;
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Не удалось загрузить заказы: ${e.message}</p>`;
+    });
+}
+
+async function supportUpdateOrderStatus(orderId, status) {
+  try {
+    await Api.updateOrderStatus(orderId, status);
+    renderSupportOrders();
+    toast(`Статус → ${STATUS_LABELS[status] || status}`, "success");
+  } catch (e) {
+    toast(e.message || "Не удалось обновить статус", "error");
+  }
 }
 
 // ─── Admin Panel ───
 function renderAdminHome() {
   const el = $("#page-admin-home");
   if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:180px;margin-bottom:12px"></div>`;
 
-  el.innerHTML = `
-    <h1 class="page-title">Admin</h1>
-    <p class="page-sub">Полный доступ к платформе</p>
+  Promise.all([Api.adminListUsers(), Api.listTopups(), Api.adminListTickets()])
+    .then(([users, topups, tickets]) => {
+      state.adminHomeUsers = users;
+      const paidCount = users.filter((u) => u.is_paid).length;
+      const waitingTopups = topups.filter((t) => t.status === "waiting").length;
+      const openTickets = tickets.filter((t) => t.status !== "closed").length;
 
-    <div class="kpi-grid">
-      <div class="kpi-card agents"><div class="kpi-label">Users</div><div class="kpi-value">1 284</div></div>
-      <div class="kpi-card balance"><div class="kpi-label">MRR</div><div class="kpi-value">$48k</div></div>
-      <div class="kpi-card accounts"><div class="kpi-label">Agents</div><div class="kpi-value">${AGENTS.length}</div></div>
-      <div class="kpi-card spend"><div class="kpi-label">Orders</div><div class="kpi-value">${state.orders.length}</div></div>
-    </div>
+      el.innerHTML = `
+        <h1 class="page-title">Admin</h1>
+        <p class="page-sub">Полный доступ к платформе</p>
 
-    <div class="admin-grid">
-      <div class="admin-tile" onclick="showPage('admin-users')"><div class="icon">👥</div><h4>Пользователи</h4><p>Подписки, роли</p></div>
-      <div class="admin-tile" onclick="toast('Agents management','info')"><div class="icon">🏢</div><h4>Агенты</h4><p>${AGENTS.length} партнёров</p></div>
-      <div class="admin-tile" onclick="showPage('admin-orders')"><div class="icon">📦</div><h4>Заказы</h4><p>Все статусы</p></div>
-      <div class="admin-tile" onclick="toast('Topups overview','info')"><div class="icon">💰</div><h4>Пополнения</h4><p>${state.topups.length} заявок</p></div>
-      <div class="admin-tile" onclick="toast('Tickets admin','info')"><div class="icon">🎫</div><h4>Тикеты</h4><p>${state.tickets.length} всего</p></div>
-      <div class="admin-tile" onclick="showPage('admin-logs')"><div class="icon">📋</div><h4>Логи</h4><p>Аудит</p></div>
-      <div class="admin-tile" onclick="toast('Settings opened','info')"><div class="icon">⚙️</div><h4>Настройки</h4><p>Система</p></div>
-      <div class="admin-tile" onclick="toast('Status: All systems OK','success')"><div class="icon">🟢</div><h4>Статусы</h4><p>Health</p></div>
-    </div>
-  `;
+        <div class="kpi-grid">
+          <div class="kpi-card agents"><div class="kpi-label">Users</div><div class="kpi-value">${users.length}</div></div>
+          <div class="kpi-card balance"><div class="kpi-label">Оплачено</div><div class="kpi-value">${paidCount}</div></div>
+          <div class="kpi-card accounts"><div class="kpi-label">Agents</div><div class="kpi-value">${AGENTS.length}</div></div>
+          <div class="kpi-card spend"><div class="kpi-label">Orders</div><div class="kpi-value">${state.orders.length}</div></div>
+        </div>
+
+        <div class="admin-grid">
+          <div class="admin-tile" onclick="showPage('admin-users')"><div class="icon">👥</div><h4>Пользователи</h4><p>Подписки, роли</p></div>
+          <div class="admin-tile" onclick="showPage('admin-agents')"><div class="icon">🏢</div><h4>Агенты</h4><p>${AGENTS.length} партнёров</p></div>
+          <div class="admin-tile" onclick="showPage('admin-orders')"><div class="icon">📦</div><h4>Заказы</h4><p>${state.orders.length} всего</p></div>
+          <div class="admin-tile" onclick="showPage('admin-topups')"><div class="icon">💰</div><h4>Пополнения</h4><p>${waitingTopups} ожидают</p></div>
+          <div class="admin-tile" onclick="showPage('admin-tickets')"><div class="icon">🎫</div><h4>Тикеты</h4><p>${openTickets} открыто</p></div>
+          <div class="admin-tile" onclick="showPage('admin-logs')"><div class="icon">📋</div><h4>Логи</h4><p>Аудит</p></div>
+          <div class="admin-tile" onclick="showPage('admin-settings')"><div class="icon">⚙️</div><h4>Настройки</h4><p>Саппорт, доступы</p></div>
+          <div class="admin-tile" onclick="showPage('admin-health')"><div class="icon">🟢</div><h4>Статусы</h4><p>Health</p></div>
+        </div>
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Не удалось загрузить сводку: ${e.message}</p>`;
+    });
 }
 
 function renderAdminUsers() {
@@ -2452,6 +2562,7 @@ function renderAdminAgents() {
                 <strong>${a.name}</strong>
                 <span class="badge ${a.visible ? "badge-green" : "badge-muted"}">${a.visible ? "Виден" : "Скрыт"}</span>
               </div>
+              ${a.description ? `<p class="text-xs text-secondary mb-8">${a.description}</p>` : ""}
               <div class="agent-stats mb-12">
                 <span>${a.percent}%</span>
                 <span>${formatMoney(a.balance)}</span>
@@ -2483,6 +2594,27 @@ async function adminToggleAgentVisibility(agentId) {
   }
 }
 
+const AGENT_VERTICALS = ["Gambling", "Crypto", "Nutra", "White"];
+
+function verticalsCheckboxes(idPrefix, selected) {
+  return `
+    <div class="flex gap-8" style="flex-wrap:wrap">
+      ${AGENT_VERTICALS.map(
+        (v) => `
+        <label class="tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+          <input type="checkbox" id="${idPrefix}-${v}" ${selected.includes(v) ? "checked" : ""} />
+          ${v}
+        </label>
+      `
+      ).join("")}
+    </div>
+  `;
+}
+
+function readCheckedVerticals(idPrefix) {
+  return AGENT_VERTICALS.filter((v) => $(`#${idPrefix}-${v}`)?.checked);
+}
+
 function openAdminAgentEdit(agentId) {
   Api.adminListAgents().then((agents) => {
     const a = agents.find((x) => x.id === agentId);
@@ -2493,6 +2625,14 @@ function openAdminAgentEdit(agentId) {
       <div class="form-group">
         <label class="form-label">Название</label>
         <input class="form-input" id="ag-name" value="${a.name}" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Описание</label>
+        <textarea class="form-input" id="ag-description" rows="2" placeholder="Краткое описание агента для байеров">${a.description || ""}</textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Вертикали</label>
+        ${verticalsCheckboxes("ag-v", a.verticals || [])}
       </div>
       <div class="form-group">
         <label class="form-label">Процент (%)</label>
@@ -2520,6 +2660,8 @@ async function saveAdminAgentEdit(agentId) {
   const payload = {
     agent_id: agentId,
     name: $("#ag-name")?.value?.trim(),
+    description: $("#ag-description")?.value?.trim(),
+    verticals: readCheckedVerticals("ag-v"),
     percent: parseFloat($("#ag-percent")?.value || "0"),
     wallet: $("#ag-wallet")?.value?.trim(),
     min_topup: parseFloat($("#ag-mintopup")?.value || "0"),
@@ -2542,6 +2684,14 @@ function openAdminAgentCreate() {
     <div class="form-group">
       <label class="form-label">Название</label>
       <input class="form-input" id="ag-new-name" placeholder="Agent #6" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Описание</label>
+      <textarea class="form-input" id="ag-new-description" rows="2" placeholder="Краткое описание агента для байеров"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Вертикали</label>
+      ${verticalsCheckboxes("ag-new-v", [])}
     </div>
     <div class="form-group">
       <label class="form-label">Процент (%)</label>
@@ -2569,6 +2719,8 @@ async function saveAdminAgentCreate() {
   try {
     await Api.adminCreateAgent({
       name,
+      description: $("#ag-new-description")?.value?.trim() || "",
+      verticals: readCheckedVerticals("ag-new-v"),
       percent: parseFloat($("#ag-new-percent")?.value || "5"),
       wallet: $("#ag-new-wallet")?.value?.trim() || "",
       min_topup: parseFloat($("#ag-new-mintopup")?.value || "50"),
@@ -2607,6 +2759,144 @@ function renderAdminOrders() {
         .join("")}
     </div>
   `;
+}
+
+function renderAdminTopups() {
+  const el = $("#page-admin-topups");
+  if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:80px;margin-bottom:12px"></div>`;
+
+  Api.listTopups()
+    .then((topups) => {
+      state.adminTopups = topups;
+      el.innerHTML = `
+        <h1 class="page-title">Пополнения</h1>
+        <p class="page-sub">${topups.filter((t) => t.status === "waiting").length} ожидают подтверждения</p>
+        <div class="order-list mt-16">
+          ${
+            topups.length
+              ? topups
+                  .map(
+                    (t) => `
+            <div class="card mb-12" style="padding:14px">
+              <div class="flex justify-between items-center mb-8">
+                <span class="order-id">${t.id}</span>
+                <span class="status status-${t.status}">${STATUS_LABELS[t.status] || t.status}</span>
+              </div>
+              <div class="order-meta mb-8">
+                <span>${t.agentName || "—"}</span>
+                <span>${formatMoney(t.amount)}</span>
+                <span>${new Date(t.createdAt).toLocaleString("ru-RU")}</span>
+              </div>
+              <p class="text-xs text-muted font-mono mb-8" style="word-break:break-all">Hash: ${t.hash || "—"}</p>
+              ${
+                t.status === "waiting"
+                  ? `<div class="flex gap-8">
+                      <button type="button" class="btn btn-primary btn-sm" style="flex:1" onclick="adminConfirmTopup('${t.id}')">Подтвердить</button>
+                      <button type="button" class="btn btn-secondary btn-sm" style="flex:1" onclick="adminRejectTopup('${t.id}')">Отклонить</button>
+                    </div>`
+                  : ""
+              }
+            </div>
+          `
+                  )
+                  .join("")
+              : `<p class="text-secondary text-sm">Пока нет заявок</p>`
+          }
+        </div>
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Не удалось загрузить пополнения: ${e.message}</p>`;
+    });
+}
+
+async function adminConfirmTopup(id) {
+  try {
+    await Api.updateTopupStatus(id, "confirmed");
+    renderAdminTopups();
+    toast("Пополнение подтверждено, баланс начислен", "success");
+  } catch (e) {
+    toast(e.message || "Не удалось подтвердить", "error");
+  }
+}
+
+async function adminRejectTopup(id) {
+  try {
+    await Api.updateTopupStatus(id, "updated");
+    renderAdminTopups();
+    toast("Заявка отклонена", "info");
+  } catch (e) {
+    toast(e.message || "Не удалось отклонить", "error");
+  }
+}
+
+function renderAdminHealth() {
+  const el = $("#page-admin-health");
+  if (!el) return;
+  el.innerHTML = `<div class="skeleton-block" style="height:80px"></div>`;
+
+  Api.health()
+    .then((h) => {
+      el.innerHTML = `
+        <h1 class="page-title">Статусы</h1>
+        <p class="page-sub">Диагностика бэкенда в реальном времени</p>
+        <div class="card mt-16" style="padding:16px">
+          <div class="flex justify-between mb-12"><span class="text-secondary text-sm">API</span><span class="status status-active">🟢 OK</span></div>
+          <div class="flex justify-between mb-12"><span class="text-secondary text-sm">База данных</span><span class="text-sm">${h.db_backend}</span></div>
+          <div class="flex justify-between mb-12"><span class="text-secondary text-sm">ADMIN_IDS настроено</span><span class="text-sm">${h.admin_ids_configured}</span></div>
+          <div class="flex justify-between mb-12"><span class="text-secondary text-sm">BOT_TOKEN настроен</span><span class="text-sm">${h.bot_token_configured ? "✓ да" : "✗ нет"}</span></div>
+          <div class="flex justify-between"><span class="text-secondary text-sm">CORS_ORIGINS</span><span class="text-xs font-mono">${(h.cors_origins || []).join(", ")}</span></div>
+        </div>
+        <p class="text-xs text-muted mt-12">Время сервера: ${new Date(h.time).toLocaleString("ru-RU")}</p>
+      `;
+    })
+    .catch((e) => {
+      el.innerHTML = `<p class="text-secondary text-sm">Бэкенд не отвечает: ${e.message}</p>`;
+    });
+}
+
+function renderAdminSettings() {
+  const el = $("#page-admin-settings");
+  if (!el) return;
+  el.innerHTML = `
+    <h1 class="page-title">Настройки</h1>
+    <p class="page-sub">Быстрые административные действия</p>
+    <div class="card mb-16" style="padding:16px">
+      <h3 style="font-size:14px;font-weight:700;margin-bottom:8px">Назначить саппорта по нику</h3>
+      <p class="text-xs text-secondary mb-12">Пользователь должен хотя бы раз открыть приложение (чтобы завести аккаунт), дальше можно выдать ему роль Support здесь по нику.</p>
+      <div class="form-group">
+        <input class="form-input" id="settings-support-username" placeholder="@username" />
+      </div>
+      <button type="button" class="btn btn-primary" onclick="promoteUserToSupport()">Сделать саппортом</button>
+    </div>
+    <div class="card" style="padding:16px">
+      <h3 style="font-size:14px;font-weight:700;margin-bottom:8px">Прочее</h3>
+      <div class="settings-row" onclick="showPage('admin-users')"><span>Управление ролями/оплатой</span><span class="arrow">›</span></div>
+      <div class="settings-row" onclick="showPage('admin-health')"><span>Статусы системы</span><span class="arrow">›</span></div>
+    </div>
+  `;
+}
+
+async function promoteUserToSupport() {
+  const raw = $("#settings-support-username")?.value?.trim().replace(/^@/, "");
+  if (!raw) {
+    toast("Введите @username", "error");
+    return;
+  }
+  try {
+    const users = await Api.adminListUsers();
+    const target = users.find((u) => u.username && u.username.toLowerCase() === raw.toLowerCase());
+    if (!target) {
+      toast("Такой пользователь ещё не открывал приложение", "error");
+      return;
+    }
+    await Api.adminUpdateUser({ user_id: target.id, role: "support" });
+    toast(`@${raw} теперь Support`, "success");
+    $("#settings-support-username").value = "";
+  } catch (e) {
+    toast(e.message || "Не удалось назначить саппорта", "error");
+  }
 }
 
 function renderAdminTickets() {
@@ -2774,6 +3064,7 @@ function openAgentDetail(id) {
       <span class="stars">${formatStars(a.rating)}</span>
       ${a.reviewCount ? `<span class="text-secondary text-xs">${a.avgRating} · ${a.reviewCount} отзыв(ов)</span>` : `<span class="text-secondary text-xs">пока нет отзывов</span>`}
     </div>
+    ${a.description ? `<p class="text-sm text-secondary mb-12">${a.description}</p>` : ""}
     <div class="tags mb-16">
       ${a.verticals.map((v) => `<span class="tag">${v}</span>`).join("")}
     </div>
@@ -2996,7 +3287,7 @@ Object.assign(window, {
   markAllRead,
   inviteMember,
   sendInvite,
-  selectPlan,
+  requestPlanChange,
   openCreateTicket,
   submitTicket,
   openTicketDetail,
@@ -3008,7 +3299,7 @@ Object.assign(window, {
   agentUpdateBalance,
   supportOpenTicket,
   supportReply,
-  supportResolve,
+  supportUpdateOrderStatus,
   closeSheet,
   closeModal,
   toast,
@@ -3028,6 +3319,9 @@ Object.assign(window, {
   adminAssignSupport,
   openAdminTicketDetail,
   submitAdminTicketReply,
+  adminConfirmTopup,
+  adminRejectTopup,
+  promoteUserToSupport,
   openAgentReview,
   openAgentReviewsList,
   setReviewStars,

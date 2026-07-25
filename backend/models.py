@@ -52,6 +52,7 @@ class Agent(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
+    description = Column(Text, default="")
     percent = Column(Float, default=5)
     verticals = Column(String, default="")  # comma-separated
     rating = Column(Integer, default=5)
@@ -76,7 +77,7 @@ class Order(Base):
     qty = Column(Integer, default=1)
     timezone = Column(String, default="UTC+0")
     pixel = Column(Boolean, default=False)
-    pixel_name = Column(String, default="")
+    pixel_names = Column(Text, default="")  # JSON-encoded list
     bm = Column(String, default="new")
     fan_pages = Column(Boolean, default=False)
     fan_page_count = Column(Integer, default=0)

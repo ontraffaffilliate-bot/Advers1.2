@@ -232,6 +232,7 @@ def agent_out(a: models.Agent, db: Session = None, owner_id: int = None) -> dict
     return {
         "id": a.id,
         "name": a.name,
+        "description": a.description,
         "percent": a.percent,
         "verticals": [v for v in a.verticals.split(",") if v],
         "rating": round(avg_rating) if avg_rating else a.rating,
@@ -257,7 +258,7 @@ def order_out(o: models.Order) -> dict:
         "qty": o.qty,
         "timezone": o.timezone,
         "pixel": o.pixel,
-        "pixelName": o.pixel_name,
+        "pixelNames": json.loads(o.pixel_names) if o.pixel_names else [],
         "bm": o.bm,
         "fanPages": o.fan_pages,
         "fanPageCount": o.fan_page_count,
@@ -311,16 +312,17 @@ class AgentToggleIn(BaseModel):
 class AgentUpdateIn(BaseModel):
     agent_id: int
     name: Optional[str] = None
+    description: Optional[str] = None
     percent: Optional[float] = None
     verticals: Optional[List[str]] = None
     wallet: Optional[str] = None
     min_topup: Optional[float] = None
     instruction: Optional[str] = None
-    balance: Optional[float] = None
 
 
 class AgentCreateIn(BaseModel):
     name: str
+    description: str = ""
     percent: float = 5
     verticals: List[str] = []
     wallet: str = ""
@@ -333,7 +335,7 @@ class OrderCreateIn(BaseModel):
     qty: int
     timezone: str
     pixel: bool = False
-    pixelName: str = ""
+    pixelNames: List[str] = []
     bm: str = "new"
     fanPages: bool = False
     fanPageCount: int = 0
@@ -452,6 +454,7 @@ def admin_list_agents(admin: models.User = Depends(require_admin), db: Session =
 def admin_create_agent(payload: AgentCreateIn, admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
     a = models.Agent(
         name=payload.name,
+        description=payload.description,
         percent=payload.percent,
         verticals=",".join(payload.verticals),
         wallet=payload.wallet,
@@ -484,6 +487,8 @@ def admin_update_agent(payload: AgentUpdateIn, admin: models.User = Depends(requ
         raise HTTPException(404, "Агент не найден")
     if payload.name is not None:
         a.name = payload.name
+    if payload.description is not None:
+        a.description = payload.description
     if payload.percent is not None:
         a.percent = payload.percent
     if payload.verticals is not None:
@@ -494,8 +499,6 @@ def admin_update_agent(payload: AgentUpdateIn, admin: models.User = Depends(requ
         a.min_topup = payload.min_topup
     if payload.instruction is not None:
         a.instruction = payload.instruction
-    if payload.balance is not None:
-        a.balance = payload.balance
     a.updated_at = datetime.utcnow()
     db.commit()
     audit(db, admin, "agent_update", target=f"agent:{a.id}", meta=payload.dict(exclude_unset=True))
@@ -535,7 +538,7 @@ async def create_order(payload: OrderCreateIn, user: models.User = Depends(requi
         qty=payload.qty,
         timezone=payload.timezone,
         pixel=payload.pixel,
-        pixel_name=payload.pixelName,
+        pixel_names=json.dumps(payload.pixelNames),
         bm=payload.bm,
         fan_pages=payload.fanPages,
         fan_page_count=payload.fanPageCount,
@@ -999,18 +1002,98 @@ def list_tickets(user: models.User = Depends(get_current_user), db: Session = De
 
 
 async def _notify_ticket_recipients(db: Session, ticket: models.Ticket, text: str):
-    """Send the Telegram DM to the admin(s) and the assigned support (if any), recording each (chat_id, message_id) so a reply from ANY of them can be matched back to this ticket."""
+    """
+    Если у владельца тикета закреплён саппорт — уведомление идёт ТОЛЬКО ему
+    (это и есть смысл закрепления: разгрузить админа и дать саппорту реально
+    вести своих клиентов). Админ получает уведомление только как fallback,
+    если саппорт не закреплён.
+    """
     owner = db.query(models.User).get(ticket.owner_id)
-    recipients = set(ADMIN_IDS)
+    recipients = set()
     if owner and owner.assigned_support_id:
         support = db.query(models.User).get(owner.assigned_support_id)
         if support:
             recipients.add(support.telegram_id)
+    if not recipients:
+        recipients = set(ADMIN_IDS)
     for chat_id in recipients:
         sent = await send_telegram_message(chat_id, text)
         if sent:
             db.add(models.TicketNotification(ticket_id=ticket.id, chat_id=chat_id, message_id=sent["message_id"]))
     db.commit()
+
+
+@app.get("/api/support/my-tickets")
+def support_my_tickets(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Тикеты только тех пользователей, за кем закреплён именно этот саппорт (или все — если админ смотрит через этот же экран)."""
+    if not (user.is_admin or user.role == "support"):
+        raise HTTPException(403, "Доступно только саппорту/админу")
+    if user.is_admin:
+        owned_ids = [u.id for u in db.query(models.User.id).all()]
+    else:
+        owned_ids = [u.id for u in db.query(models.User.id).filter(models.User.assigned_support_id == user.id).all()]
+    tickets = (
+        db.query(models.Ticket)
+        .filter(models.Ticket.owner_id.in_(owned_ids or [-1]))
+        .order_by(models.Ticket.updated_at.desc())
+        .all()
+    )
+    out = []
+    for t in tickets:
+        owner = db.query(models.User).get(t.owner_id)
+        out.append({
+            "id": t.id,
+            "subject": t.subject,
+            "status": t.status,
+            "owner": f"@{owner.username}" if owner and owner.username else f"tg:{t.owner_telegram_id}",
+            "ownerRole": owner.role if owner else None,
+            "createdAt": t.created_at.isoformat(),
+            "updatedAt": t.updated_at.isoformat(),
+            "messages": [
+                {"sender": m.sender, "text": m.text, "createdAt": m.created_at.isoformat()}
+                for m in t.messages
+            ],
+        })
+    return out
+
+
+@app.post("/api/support/tickets/{ticket_id}/reply")
+async def support_reply_ticket(ticket_id: int, payload: AdminTicketReplyIn, user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not (user.is_admin or user.role == "support"):
+        raise HTTPException(403, "Доступно только саппорту/админу")
+    ticket = db.query(models.Ticket).get(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Тикет не найден")
+    owner = db.query(models.User).get(ticket.owner_id)
+    if not user.is_admin and (not owner or owner.assigned_support_id != user.id):
+        raise HTTPException(403, "Этот тикет закреплён не за вами")
+
+    msg = models.TicketMessage(ticket_id=ticket.id, sender="admin", text=payload.message)
+    ticket.status = "answered"
+    ticket.updated_at = datetime.utcnow()
+    db.add(msg)
+    db.commit()
+    if owner:
+        await send_telegram_message(owner.telegram_id, f"💬 *Ответ поддержки* (тикет #{ticket.id}):\n\n{payload.message}")
+    return {"status": "ok"}
+
+
+@app.get("/api/support/my-orders")
+def support_my_orders(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Заказы покупателей, закреплённых за этим саппортом — чтобы он мог их вести/редактировать, не дожидаясь агента."""
+    if not (user.is_admin or user.role == "support"):
+        raise HTTPException(403, "Доступно только саппорту/админу")
+    if user.is_admin:
+        owned_ids = [u.id for u in db.query(models.User.id).all()]
+    else:
+        owned_ids = [u.id for u in db.query(models.User.id).filter(models.User.assigned_support_id == user.id).all()]
+    orders = (
+        db.query(models.Order)
+        .filter(models.Order.owner_id.in_(owned_ids or [-1]))
+        .order_by(models.Order.created_at.desc())
+        .all()
+    )
+    return [order_out(o) for o in orders]
 
 
 @app.post("/api/support/tickets")
